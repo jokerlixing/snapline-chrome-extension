@@ -1,0 +1,23 @@
+{
+  "name": "snapline-chrome-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "node tests/e2e.mjs",
+    "check": "npm run test && npm run build",
+    "preview": "node scripts/serve.mjs",
+    "test:engine": "node tests/engine-e2e.mjs",
+    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e"
+  },
+  "dependencies": {
+    "jspdf": "^4.2.1",
+    "lucide": "^0.468.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.9",
+    "playwright": "^1.55.0"
+  }
+}

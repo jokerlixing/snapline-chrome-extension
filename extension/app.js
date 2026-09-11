@@ -1,0 +1,202 @@
+import { createIcons, ScanLine, PanelsTopLeft, History, ShieldCheck, CircleHelp, ArrowUpRight, BookOpen, Scan, FileCode2, Globe2, FolderUp, RefreshCw, Link, Info, ArrowRight, Minus, Plus, Asterisk, ArrowDownRight, Image, SlidersHorizontal, FileText, ChevronDown, Download, Trash2, Sparkles, X } from 'lucide';
+import { putItem, getItem, deleteItem, listItems } from './lib/store.js';
+import { packHtml, listHtmlEntries } from './lib/import-html.js';
+import { encodeExport, safeFilename } from './lib/export.js';
+
+const $ = id => document.getElementById(id);
+const icons = { ScanLine, PanelsTopLeft, History, ShieldCheck, CircleHelp, ArrowUpRight, BookOpen, Scan, FileCode2, Globe2, FolderUp, RefreshCw, Link, Info, ArrowRight, Minus, Plus, Asterisk, ArrowDownRight, Image, SlidersHorizontal, FileText, ChevronDown, Download, Trash2, Sparkles, X };
+const renderIcons = () => createIcons({ icons, attrs: { 'aria-hidden': 'true' } });
+const isExtension = location.protocol === 'chrome-extension:' && Boolean(globalThis.chrome?.runtime?.id);
+const state = { source: 'html', format: 'png', scale: 1, files: [], entryPath: null, htmlId: null, record: null, stale: false, busy: false, capturing: false, zoom: 'fit', previewUrl: null, historyUrls: [], importWarnings: [] };
+let toastTimer;
+let importVersion = 0;
+const ephemeralHtml = new Set();
+const downloadUrls = new Map();
+let preferencesReady = false;
+
+function notify(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4000); }
+function message(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); $('message').hidden = !text; }
+function warnings(items) { $('warning-box').replaceChildren(); const unique = [...new Set(items || [])]; $('warning-box').hidden = !unique.length; if (unique.length) { const ul = document.createElement('ul'); for (const warning of unique) { const li = document.createElement('li'); li.textContent = warning; ul.append(li); } $('warning-box').append(ul); } }
+function bytes(n) { return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`; }
+function captureOptions() { return { width: Number($('width').value), scope: $('scope').value, scale: state.scale, delay: Number($('delay').value), lazyLoad: $('lazy-load').checked, transparent: $('transparent').checked }; }
+function setBusy(value, capture = false) {
+  state.busy = value; state.capturing = value && capture;
+  for (const element of document.querySelectorAll('.source-card button, .source-card input, .source-card select, .settings-card input, .settings-card select, .settings-card button, #clear-history, #nav-history, #nav-workbench')) element.disabled = value;
+  $('capture-button').disabled = value && !capture;
+  $('capture-button').querySelector('span').textContent = capture && value ? '取消生成' : '生成预览';
+  $('export-button').disabled = value || !state.record || state.stale;
+  $('progress-wrap').hidden = !value;
+  if (value) progress(capture ? '准备生成预览…' : '正在准备文件…', 4);
+}
+function progress(stage, percent) { $('progress-text').textContent = stage; $('progress-bar').style.width = `${Math.min(100, Math.max(0, percent))}%`; }
+function markStale() { if (!state.record) return; state.stale = true; $('preview-badge').textContent = '需要重新生成'; $('preview-badge').className = 'badge stale'; $('export-button').disabled = true; $('export-hint').textContent = '设置已改变，请重新生成预览'; }
+function selectSource(kind, stale = true) {
+  state.source = kind;
+  for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; }
+  for (const panel of ['tab', 'html', 'url']) $(`panel-${panel}`).hidden = kind !== panel;
+  if (stale) markStale();
+  if (kind === 'tab') refreshTabs().catch(error => message(error.message, true));
+}
+function selectFormat(format) {
+  state.format = format;
+  for (const button of document.querySelectorAll('[data-format]')) { const selected = button.dataset.format === format; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
+  $('quality-field').hidden = !['jpeg', 'webp'].includes(format);
+  $('pdf-fields').hidden = format !== 'pdf';
+  $('file-extension').textContent = `.${format === 'jpeg' ? 'jpg' : format}`;
+  $('export-button').querySelector('span').textContent = `导出 ${format === 'jpeg' ? 'JPG' : format === 'webp' ? 'WebP' : format.toUpperCase()}`;
+  savePreferences();
+}
+function selectScale(scale, stale = true) { state.scale = scale; for (const button of document.querySelectorAll('[data-scale]')) { const selected = Number(button.dataset.scale) === scale; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); } $('scale-description').textContent = { 1: '日常使用', 2: '适合分享与放大', 3: '更多细节，更大文件' }[scale]; if (stale) markStale(); savePreferences(); }
+async function rpc(payload) { if (!isExtension) throw new Error('请先将拾页安装到 Chrome，再进行网页转换。点击左下方「使用帮助」查看安装步骤。'); const response = await chrome.runtime.sendMessage(payload); if (!response?.ok) throw new Error(response?.error || '插件连接中断，请刷新拾页后重试。'); return response; }
+async function refreshTabs() {
+  if (!isExtension) { $('tab-select').replaceChildren(new Option('安装扩展后可选择浏览器标签页', '')); return; }
+  const previous = $('tab-select').value || new URLSearchParams(location.search).get('tab');
+  const { tabs } = await rpc({ type: 'SL_TABS' });
+  $('tab-select').replaceChildren();
+  for (const tab of tabs) { let host; try { host = new URL(tab.url).hostname || '本地文件'; } catch { host = ''; } $('tab-select').append(new Option(`${tab.title.slice(0, 55)} · ${host}`, String(tab.id))); }
+  if (!tabs.length) $('tab-select').append(new Option('没有可转换的网页，请先打开一个网页', ''));
+  if (tabs.some(tab => String(tab.id) === previous)) $('tab-select').value = previous;
+  if (previous && $('tab-select').value !== previous && state.source === 'tab') markStale();
+}
+async function importFiles(files, entryPath) {
+  if (state.busy) return;
+  const version = ++importVersion;
+  try {
+    if (!files.length) return;
+    setBusy(true);
+    const entries = listHtmlEntries(files);
+    if (!entries.length) throw new Error('没有找到 HTML 文件，请选择 .html / .htm 文件或包含网页的文件夹。');
+    if (!entryPath) entryPath = entries.find(entry => /(^|\/)index\.html?$/i.test(entry.path))?.path || entries[0].path;
+    const packed = await packHtml(files, entryPath);
+    if (version !== importVersion) return;
+    const id = `html-${crypto.randomUUID()}`;
+    await putItem({ id, kind: 'html', title: packed.title, html: packed.html });
+    ephemeralHtml.add(id);
+    state.files = files;
+    state.entryPath = packed.entryPath;
+    $('html-entry').replaceChildren(...entries.map(entry => new Option(entry.path, entry.path)));
+    $('html-entry').value = state.entryPath;
+    $('entry-wrap').hidden = entries.length < 2;
+    const previous = state.htmlId; state.htmlId = id;
+    if (previous) { await deleteItem(previous); ephemeralHtml.delete(previous); }
+    $('file-title').textContent = packed.title || packed.entryPath;
+    $('file-description').textContent = `${files.length} 个文件 · ${bytes(files.reduce((n, file) => n + file.size, 0))} · 已准备好`;
+    state.importWarnings = packed.warnings;
+    selectSource('html');
+    $('filename').value = (packed.title || '我的网页').slice(0, 100);
+    warnings(packed.warnings); message('文件已导入，点击「生成预览」查看效果。');
+  } catch (error) { if (state.entryPath) $('html-entry').value = state.entryPath; message(error.message, true); } finally { setBusy(false); }
+}
+async function capture() {
+  if (state.capturing) { $('capture-button').disabled = true; $('capture-button').querySelector('span').textContent = '正在取消…'; await rpc({ type: 'SL_CANCEL' }).catch(error => message(error.message, true)); return; }
+  if (state.busy) return;
+  let source;
+  try {
+    if (state.source === 'html') { if (!state.htmlId) throw new Error('请先选择一个 HTML 文件，或点击「试试示例网页」。'); source = { kind: 'html', htmlId: state.htmlId }; }
+    if (state.source === 'tab') { if (!$('tab-select').value) throw new Error('请先选择一个已打开的网页。'); source = { kind: 'tab', tabId: Number($('tab-select').value) }; }
+    if (state.source === 'url') { if (!$('url-input').value.trim()) throw new Error('请先粘贴网页链接。'); source = { kind: 'url', url: $('url-input').value.trim() }; }
+    setBusy(true, true); message(''); warnings([]);
+    const { result } = await rpc({ type: 'SL_CAPTURE', source, options: captureOptions() });
+    const record = await getItem(result.id);
+    if (!record) throw new Error('本地预览未能读取，请重新生成。');
+    await showRecord(record);
+    warnings([...(state.source === 'html' ? state.importWarnings : []), ...(result.warnings || [])]);
+    message('预览已生成。选择格式，即可保存到电脑。');
+    await updateHistoryCount();
+  } catch (error) { message(error.message, true); } finally { setBusy(false); }
+}
+async function showRecord(record) {
+  state.record = record; state.stale = false; state.zoom = 'fit';
+  if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
+  state.previewUrl = URL.createObjectURL(record.blob);
+  const preview = $('preview-image');
+  preview.src = state.previewUrl;
+  await preview.decode();
+  preview.hidden = false; $('empty-preview').hidden = true;
+  $('preview-badge').textContent = '已就绪'; $('preview-badge').className = 'badge ready';
+  $('preview-meta').textContent = `${record.width.toLocaleString()} × ${record.height.toLocaleString()} px`;
+  $('preview-size').textContent = `${bytes(record.byteSize)} · 原始 PNG`;
+  $('filename').value = record.title.slice(0, 100);
+  $('export-hint').textContent = '预览已就绪，可以切换格式导出';
+  for (const id of ['zoom-in', 'zoom-out', 'zoom-fit']) $(id).disabled = false;
+  $('export-button').disabled = state.busy;
+  updateZoom();
+}
+function updateZoom() { if (!state.record) return; const width = state.zoom === 'fit' ? Math.min(state.record.width, $('preview-stage').clientWidth - 48) : Math.round(state.record.width * state.zoom); $('preview-image').style.width = `${width}px`; $('zoom-fit').textContent = state.zoom === 'fit' ? '适应' : `${Math.round(state.zoom * 100)}%`; }
+function changeZoom(delta) { if (!state.record) return; const current = state.zoom === 'fit' ? Math.min(1, ($('preview-stage').clientWidth - 48) / state.record.width) : state.zoom; state.zoom = Math.max(.1, Math.min(3, current + delta)); updateZoom(); }
+async function download() {
+  if (state.busy || !state.record || state.stale) return;
+  try {
+    setBusy(true); message('');
+    const blob = await encodeExport(state.record, { format: state.format, quality: Number($('quality').value), layout: $('pdf-layout').value, margin: Number($('pdf-margin').value) });
+    const url = URL.createObjectURL(blob);
+    const filename = safeFilename($('filename').value, state.format);
+    if (isExtension) {
+      try { const id = await chrome.downloads.download({ url, filename, saveAs: true }); downloadUrls.set(id, url); }
+      catch (error) { URL.revokeObjectURL(url); throw error; }
+    } else { const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
+    message(`已创建 ${filename}（${bytes(blob.size)}），请在下载窗口选择保存位置。`);
+  } catch (error) { if (/canceled|cancelled/i.test(error.message)) message('已取消保存，你仍然可以重新导出。'); else message(error.message || '导出失败，请降低清晰度后重试。', true); }
+  finally { setBusy(false); }
+}
+async function updateHistoryCount() { $('history-count').textContent = (await listItems('capture')).length; }
+function setView(history) { $('workbench').hidden = history; $('history-view').hidden = !history; $('nav-workbench').classList.toggle('active', !history); $('nav-history').classList.toggle('active', history); $('page-label').textContent = history ? '最近的网页' : '转换工作台'; if (!history) requestAnimationFrame(updateZoom); }
+async function showHistory() {
+  setView(true); state.historyUrls.forEach(url => URL.revokeObjectURL(url)); state.historyUrls = [];
+  const records = await listItems('capture'); $('history-grid').replaceChildren(); $('clear-history').disabled = !records.length;
+  if (!records.length) { const empty = document.createElement('div'); empty.className = 'history-empty'; empty.innerHTML = '<i data-lucide="history"></i><p>这里还没有网页。生成第一张预览，就会自动保存在这里。</p>'; $('history-grid').append(empty); }
+  for (const record of records) {
+    const item = document.createElement('article'); item.className = 'history-item';
+    const image = document.createElement('img'); image.className = 'history-thumb'; image.alt = record.title; image.loading = 'lazy'; image.src = URL.createObjectURL(record.blob); state.historyUrls.push(image.src);
+    const content = document.createElement('div'); content.className = 'history-content';
+    const title = document.createElement('h3'); title.textContent = record.title; title.title = record.title;
+    const description = document.createElement('p'); description.textContent = `${record.width} × ${record.height} · ${new Date(record.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
+    const actions = document.createElement('div'); actions.className = 'history-actions';
+    const open = document.createElement('button'); open.className = 'text-button'; open.textContent = '打开并导出 →'; open.addEventListener('click', async () => { setView(false); if (record.options) applyCaptureOptions(record.options); await showRecord(record); warnings(record.warnings); message('已打开历史预览，可以选择任意格式导出。'); });
+    const remove = document.createElement('button'); remove.className = 'icon-button'; remove.setAttribute('aria-label', `删除 ${record.title}`); remove.innerHTML = '<i data-lucide="trash-2"></i>'; remove.addEventListener('click', async () => { await deleteItem(record.id); if (state.record?.id === record.id) resetPreview(); await showHistory(); await updateHistoryCount(); notify('这条记录已删除'); });
+    actions.append(open, remove); content.append(title, description, actions); item.append(image, content); $('history-grid').append(item);
+  }
+  renderIcons();
+}
+function resetPreview() { if (state.previewUrl) URL.revokeObjectURL(state.previewUrl); state.record = null; state.previewUrl = null; state.stale = false; $('preview-image').removeAttribute('src'); $('preview-image').hidden = true; $('empty-preview').hidden = false; $('preview-badge').textContent = '等待导入'; $('preview-badge').className = 'badge'; $('preview-meta').textContent = '完整呈现网页的每一个细节'; $('preview-size').textContent = 'PNG · JPG · WebP · PDF'; $('export-button').disabled = true; for (const id of ['zoom-in', 'zoom-out', 'zoom-fit']) $(id).disabled = true; message(''); warnings([]); }
+function applyCaptureOptions(options) { for (const id of ['width', 'scope', 'delay']) if (options[id] !== undefined) $(id).value = String(options[id]); $('lazy-load').checked = options.lazyLoad !== false; $('transparent').checked = options.transparent === true; selectScale([1, 2, 3].includes(options.scale) ? options.scale : 1, false); }
+async function savePreferences() { if (!isExtension || !preferencesReady) return; await chrome.storage.local.set({ preferences: { ...captureOptions(), format: state.format, quality: Number($('quality').value), pdfLayout: $('pdf-layout').value, pdfMargin: $('pdf-margin').value } }).catch(() => {}); }
+function showHelp() { if (!$('help-dialog').open) $('help-dialog').showModal(); }
+
+renderIcons();
+for (const button of document.querySelectorAll('[data-source]')) button.addEventListener('click', () => selectSource(button.dataset.source));
+document.querySelector('.source-tabs').addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const tabs = [...document.querySelectorAll('[data-source]')]; const index = tabs.findIndex(tab => tab.dataset.source === state.source); const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3; selectSource(tabs[next].dataset.source); tabs[next].focus(); });
+for (const button of document.querySelectorAll('[data-format]')) button.addEventListener('click', () => selectFormat(button.dataset.format));
+for (const button of document.querySelectorAll('[data-scale]')) button.addEventListener('click', () => selectScale(Number(button.dataset.scale)));
+for (const id of ['width', 'scope', 'delay', 'lazy-load', 'transparent']) $(id).addEventListener('change', () => { markStale(); savePreferences(); });
+for (const id of ['url-input', 'tab-select']) $(id).addEventListener('input', markStale);
+$('quality').addEventListener('input', () => { $('quality-value').textContent = `${$('quality').value}%`; savePreferences(); });
+for (const id of ['pdf-layout', 'pdf-margin']) $(id).addEventListener('change', savePreferences);
+$('choose-file').addEventListener('click', () => $('file-input').click()); $('choose-folder').addEventListener('click', () => $('folder-input').click());
+for (const id of ['file-input', 'folder-input']) $(id).addEventListener('change', event => { const files = [...event.target.files]; event.target.value = ''; importFiles(files); });
+$('html-entry').addEventListener('change', () => importFiles(state.files, $('html-entry').value));
+$('dropzone').addEventListener('dragover', event => { event.preventDefault(); if (!state.busy) $('dropzone').classList.add('drag-over'); });
+$('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('drag-over'));
+$('dropzone').addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('drag-over'); if (!state.busy) importFiles([...event.dataTransfer.files]); });
+$('demo-button').addEventListener('click', async () => { try { const response = await fetch('assets/demo.html'); if (!response.ok) throw new Error('示例文件未找到，请重新安装完整的插件。'); await importFiles([new File([await response.text()], '拾页示例.html', { type: 'text/html' })]); if (state.htmlId && isExtension) await capture(); } catch (error) { message(error.message, true); } });
+$('refresh-tabs').addEventListener('click', () => refreshTabs().catch(error => message(error.message, true)));
+$('capture-button').addEventListener('click', capture); $('export-button').addEventListener('click', download);
+$('zoom-out').addEventListener('click', () => changeZoom(-.15)); $('zoom-in').addEventListener('click', () => changeZoom(.15)); $('zoom-fit').addEventListener('click', () => { state.zoom = 'fit'; updateZoom(); }); new ResizeObserver(updateZoom).observe($('preview-stage'));
+$('nav-history').addEventListener('click', () => showHistory().catch(error => notify(error.message))); $('nav-workbench').addEventListener('click', () => setView(false));
+$('clear-history').addEventListener('click', async () => { const records = await listItems('capture'); for (const record of records) await deleteItem(record.id); resetPreview(); await showHistory(); await updateHistoryCount(); notify('本机预览记录已清空'); });
+for (const id of ['help-button', 'top-help', 'install-help']) $(id).addEventListener('click', showHelp); $('close-help').addEventListener('click', () => $('help-dialog').close()); $('help-dialog').addEventListener('click', event => { if (event.target === $('help-dialog')) { const r = $('help-dialog').getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) $('help-dialog').close(); } });
+document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('help-dialog').open && !state.busy) { event.preventDefault(); capture(); } });
+window.addEventListener('pagehide', () => { for (const id of ephemeralHtml) deleteItem(id).catch(() => {}); if (state.capturing) chrome.runtime.sendMessage({ type: 'SL_CANCEL' }).catch(() => {}); });
+
+async function initialize() {
+  if (isExtension) {
+    const { preferences } = await chrome.storage.local.get('preferences');
+    if (preferences) { applyCaptureOptions(preferences); if (['png', 'jpeg', 'webp', 'pdf'].includes(preferences.format)) selectFormat(preferences.format); $('quality').value = preferences.quality || 92; $('quality-value').textContent = `${$('quality').value}%`; if (['a4', 'letter', 'long'].includes(preferences.pdfLayout)) $('pdf-layout').value = preferences.pdfLayout; if (['0', '10', '20'].includes(preferences.pdfMargin)) $('pdf-margin').value = preferences.pdfMargin; }
+    chrome.runtime.onMessage.addListener(message => { if (message.type === 'SL_PROGRESS' && state.capturing) progress(message.stage, message.percent); });
+    chrome.downloads.onChanged.addListener(delta => { if (!downloadUrls.has(delta.id) || !delta.state || !['complete', 'interrupted'].includes(delta.state.current)) return; URL.revokeObjectURL(downloadUrls.get(delta.id)); downloadUrls.delete(delta.id); if (delta.state.current === 'complete') notify('文件已保存到电脑'); else notify('下载已取消或中断，可以再次导出'); });
+  } else $('browser-notice').hidden = false;
+  preferencesReady = true;
+  selectSource(new URLSearchParams(location.search).has('tab') ? 'tab' : 'html', false);
+  await updateHistoryCount();
+}
+initialize().catch(error => message(error.message, true));

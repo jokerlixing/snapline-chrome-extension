@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "拾页 Snapline · 网页转图片与 PDF",
+  "version": "1.0.0",
+  "description": "把本地 HTML、当前标签页和在线网页，保存为高清 PNG、JPG、WebP 或 PDF。简洁中文工作台，本机处理。",
+  "minimum_chrome_version": "120",
+  "permissions": ["debugger", "storage", "downloads", "tabs"],
+  "optional_host_permissions": ["file:///*"],
+  "background": {"service_worker": "background.js", "type": "module"},
+  "action": {"default_title": "用拾页保存这个网页", "default_icon": {"16": "assets/icon16.png", "32": "assets/icon32.png", "48": "assets/icon48.png", "128": "assets/icon128.png"}},
+  "icons": {"16": "assets/icon16.png", "32": "assets/icon32.png", "48": "assets/icon48.png", "128": "assets/icon128.png"},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'; base-uri 'self';"}
+}
