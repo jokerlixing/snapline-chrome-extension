@@ -1,7 +1,8 @@
 import { build } from 'esbuild';
-import { mkdir, cp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, cp, readFile, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { writeNotices } from './licenses.mjs';
 
 const out = resolve('dist/snapline');
 const manifest = JSON.parse(await readFile('extension/manifest.json', 'utf8'));
@@ -14,11 +15,7 @@ await cp('extension/assets', `${out}/assets`, { recursive: true });
 await cp('fixtures/demo.html', `${out}/assets/demo.html`);
 await cp('docs/使用指南.md', `${out}/使用指南.md`);
 await cp('docs/隐私说明.md', `${out}/隐私说明.md`);
-const licenses = [];
-for (const name of ['jspdf', 'lucide', 'fflate', 'fast-png', 'iobuffer', 'pako', '@babel/runtime']) {
-  try { const pkg = JSON.parse(await readFile(`node_modules/${name}/package.json`, 'utf8')); let license = ''; for (const file of ['LICENSE', 'LICENSE.txt', 'LICENSE.md']) { try { license = await readFile(`node_modules/${name}/${file}`, 'utf8'); break; } catch {} } licenses.push(`${name} ${pkg.version}\n${license || pkg.license}\n`); } catch {}
-}
-await writeFile(`${out}/THIRD-PARTY-NOTICES.txt`, licenses.join('\n-------------------------\n\n'));
+await writeNotices(out);
 if (process.platform === 'win32') {
   const archive = resolve(`dist/拾页-Snapline-v${manifest.version}.zip`);
   const escape = value => `'${value.replaceAll("'", "''")}'`;

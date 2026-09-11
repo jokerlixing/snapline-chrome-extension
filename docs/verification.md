@@ -41,7 +41,7 @@
 - `npm audit`：0 个已知漏洞。
 - 源码采用 Manifest V3，发布目录包含全部本地脚本、图标、示例及使用说明，无 CDN 运行依赖。
 
-浏览器实测使用独立临时 Chromium 配置，没有读取日常 Chrome 的个人用户数据。安装包尚未发布到 Chrome 应用商店。源码通过 GitHub `origin` 同步，安装包通过同一私有仓库的 Releases 提供；构建依赖和本机测试产物不提交到 Git。
+浏览器实测使用独立临时 Chromium 配置，没有读取日常 Chrome 的个人用户数据。安装包尚未发布到 Chrome 应用商店。源码通过 GitHub `origin` 同步，安装包通过同一仓库的 Releases 提供；构建依赖和本机测试产物不提交到 Git。
 
 ## 手机、平板尺寸预览修复
 
@@ -100,3 +100,21 @@ Chrome 的扩展重新加载与普通页面刷新是不同流程，见 [官方�
 `npm run test:upgrade` 从 Git 历史提取真实 1.0.0，在独立 Chromium 配置中开启开发者模式，保持旧后台存活、覆盖新版文件、仅刷新工作台后触发自定义 1024 像素截图。5/5 场景通过：网址恢复、文件夹 HTML 恢复且仍可切换子目录入口、列表第二个标签页准确恢复、原标签页关闭时不误选其他页面、不完整更新最多恢复一次。设置、历史记录及正常预览均核验，0 个页面脚本错误。证据：`artifacts/upgrade-e2e-results.json`。
 
 最新版构建的现有 `test:e2e` 16 项、`test:controls` 8 项全部通过，覆盖四格式真实下载、来源重置、自定义宽度和手机/平板布局。已查看 `artifacts/workbench-ready.png` 确认浅红按钮，安装 ZIP 的 23 个文件与构建目录校验一致。
+
+## 1.2.0：独立网页版与开源发布
+
+新增静态网站构建 `dist/site`，保留插件构建 `dist/snapline`。网页版支持本地 HTML、资源文件夹、粘贴代码和示例，导出沿用 PNG/JPG/WebP/PDF 流程。在线网站和已有登录标签页引导使用插件。导入脚本不会在网页版执行，复杂动态页面需使用插件。
+
+本次本机验证：
+
+| 命令 | 通过情况 | 重点 |
+| --- | --- | --- |
+| `npm test` | 25 项 | 现有参数、资源导入和导出规则 |
+| `npm run test:web-engine` | 18 组 | 宽度与倍率、长图底部像素、透明、内部滚动、资源文件夹、取消清理、超限和脚本隔离 |
+| `npm run test:web` | 9 组 | 仓库子路径启动、示例、621 px 自定义宽度、四格式真实下载、粘贴代码、重置、文件夹、历史和设置持久化、390/768/1440 px 布局 |
+| `npm run test:e2e` | 16 项 | 插件工作台、来源、四格式下载及历史回归 |
+| `npm run test:controls` | 8 组 | 插件自定义宽度、重置与窄屏布局回归 |
+
+网页版安全场景核验导入脚本、事件处理器、SVG 和嵌套框架不会改写主工作台 localStorage 哨兵；取消会清理隔离框架且下次生成成功。UI 检查无页面脚本错误。证据：`artifacts/web-capture-e2e.json`、`artifacts/web-e2e-results.json`、`artifacts/ui-test-results.json`、`artifacts/ui-controls-results.json`。
+
+公开前已核查现有全部 Git 提交、分支、标签和 Release 说明，未发现私人会话地址、真实凭据或用户路径。新增 MIT 许可证和完整生产依赖许可清单，两种构建均附带项目及第三方许可。根目录 `使用说明.md` 分别说明网页使用、插件安装和升级。GitHub Pages 工作流在 Linux 上执行单元测试、网站构建和网页版 UI 检查后才部署；设置 `SNAPLINE_WEB_URL` 可将相同 UI 检查指向实际公共网址。

@@ -1,5 +1,5 @@
 import { createIcons, ScanLine, PanelsTopLeft, History, ShieldCheck, CircleHelp, ArrowUpRight, BookOpen, Scan, FileCode2, Globe2, FolderUp, RefreshCw, Link, Info, ArrowRight, Minus, Plus, Asterisk, ArrowDownRight, Image, SlidersHorizontal, FileText, ChevronDown, Download, Trash2, Sparkles, X } from 'lucide';
-import { putItem, getItem, deleteItem, listItems } from './lib/store.js';
+import { putItem, getItem, deleteItem, listItems, pruneCaptures } from './lib/store.js';
 import { packHtml, listHtmlEntries } from './lib/import-html.js';
 import { encodeExport, planRasterExport, safeFilename } from './lib/export.js';
 import { RELOAD_SESSION_KEY, validReloadSession } from './lib/reload-session.js';
@@ -19,6 +19,7 @@ const downloadUrls = new Map();
 let preferencesReady = false;
 let extensionReloading = false;
 let reloadAttempted = new URLSearchParams(location.search).has('resume');
+let webCaptureController = null;
 const OLD_WIDTH_ERROR = '请选择原始宽度、手机、平板或桌面尺寸。';
 
 function notify(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4000); }
@@ -35,8 +36,8 @@ function updateWidthField() { $('custom-width-field').hidden = $('width').value 
 function captureOptions() { return { width: $('width').value === 'custom' ? customWidth() : Number($('width').value), scope: $('scope').value, scale: state.scale, delay: Number($('delay').value), lazyLoad: $('lazy-load').checked, transparent: $('transparent').checked }; }
 function setBusy(value, capture = false) {
   state.busy = value; state.capturing = value && capture;
-  for (const element of document.querySelectorAll('.source-card button, .source-card input, .source-card select, .settings-card input, .settings-card select, .settings-card button, #clear-history, #nav-history, #nav-workbench')) element.disabled = value;
-  $('capture-button').disabled = value && !capture;
+  for (const element of document.querySelectorAll('.source-card button, .source-card input, .source-card select, .source-card textarea, .settings-card input, .settings-card select, .settings-card button, #clear-history, #nav-history, #nav-workbench')) element.disabled = value;
+  $('capture-button').disabled = (value && !capture) || (!isExtension && state.source === 'url');
   $('capture-button').querySelector('span').textContent = capture && value ? '取消生成' : '生成预览';
   $('export-button').disabled = value || !state.record || state.stale;
   $('progress-wrap').hidden = !value;
@@ -51,9 +52,11 @@ function updateExportHint() {
   $('export-hint').textContent = plan.scaled ? `超长网页按 WebP 格式上限等比缩小至 ${plan.width} × ${plan.height} px，保留完整内容` : '预览已就绪，可以切换格式导出';
 }
 function selectSource(kind, stale = true) {
+  if (!isExtension && kind === 'tab') kind = 'html';
   state.source = kind;
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; }
-  for (const panel of ['tab', 'html', 'url']) $(`panel-${panel}`).hidden = kind !== panel;
+  for (const panel of ['tab', 'html', 'code', 'url']) $(`panel-${panel}`).hidden = kind !== panel;
+  if (!state.busy) $('capture-button').disabled = !isExtension && kind === 'url';
   if (stale) markStale();
   if (kind === 'tab') refreshTabs().catch(error => message(error.message, true));
 }
@@ -111,28 +114,46 @@ async function importFiles(files, entryPath) {
   } catch (error) { if (state.entryPath) $('html-entry').value = state.entryPath; message(error.message, true); } finally { setBusy(false); }
 }
 async function capture() {
-  if (state.capturing) { $('capture-button').disabled = true; $('capture-button').querySelector('span').textContent = '正在取消…'; await rpc({ type: 'SL_CANCEL' }).catch(error => message(error.message, true)); return; }
+  if (state.capturing) { $('capture-button').disabled = true; $('capture-button').querySelector('span').textContent = '正在取消…'; if (isExtension) await rpc({ type: 'SL_CANCEL' }).catch(error => message(error.message, true)); else webCaptureController?.abort(); return; }
   if (state.busy) return;
   let source;
   try {
     if (state.source === 'html') { if (!state.htmlId) throw new Error('请先选择一个 HTML 文件，或点击「试试示例网页」。'); source = { kind: 'html', htmlId: state.htmlId }; }
+    if (state.source === 'code') { if (!$('html-code').value.trim()) throw new Error('请先粘贴一段 HTML 代码，或点击「试试示例网页」。'); source = { kind: 'code', html: $('html-code').value }; }
     if (state.source === 'tab') { if (!$('tab-select').value) throw new Error('请先选择一个已打开的网页。'); source = { kind: 'tab', tabId: Number($('tab-select').value) }; }
-    if (state.source === 'url') { if (!$('url-input').value.trim()) throw new Error('请先粘贴网页链接。'); source = { kind: 'url', url: $('url-input').value.trim() }; }
+    if (state.source === 'url') { if (!isExtension) throw new Error('在线网站请使用拾页 Chrome 插件；网页版可导入本地 HTML 或粘贴代码。'); if (!$('url-input').value.trim()) throw new Error('请先粘贴网页链接。'); source = { kind: 'url', url: $('url-input').value.trim() }; }
     const options = captureOptions();
     setBusy(true, true); message(''); warnings([]);
-    const { result } = await rpc({ type: 'SL_CAPTURE', source, options });
-    const record = await getItem(result.id);
+    let record;
+    let captureWarnings;
+    if (isExtension) {
+      const { result } = await rpc({ type: 'SL_CAPTURE', source, options });
+      record = await getItem(result.id);
+      captureWarnings = [...(state.source === 'html' ? state.importWarnings : []), ...(result.warnings || [])];
+    } else {
+      webCaptureController = new AbortController();
+      const input = source.kind === 'code' ? await packHtml([new File([source.html], '粘贴的网页.html', { type: 'text/html' })]) : await getItem(source.htmlId);
+      if (!input?.html) throw new Error('本地网页未能读取，请重新导入。');
+      webCaptureController.signal.throwIfAborted();
+      const { captureWebHtml } = await import('./lib/web-capture.js');
+      const result = await captureWebHtml({ html: input.html, title: input.title || '我的网页' }, options, { signal: webCaptureController.signal, onProgress: ({ stage, percent }) => progress(stage, percent) });
+      captureWarnings = [...(state.source === 'html' ? state.importWarnings : input.warnings || []), ...(result.warnings || [])];
+      record = { id: `capture-${crypto.randomUUID()}`, kind: 'capture', title: String(result.title || input.title || '我的网页').slice(0, 240), width: result.width, height: result.height, blob: result.blob, byteSize: result.blob.size, createdAt: Date.now(), options, warnings: captureWarnings };
+      await putItem(record);
+      await pruneCaptures(12);
+    }
     if (!record) throw new Error('本地预览未能读取，请重新生成。');
     await showRecord(record);
-    warnings([...(state.source === 'html' ? state.importWarnings : []), ...(result.warnings || [])]);
+    warnings(captureWarnings);
     message('预览已生成。选择格式，即可保存到电脑。');
     await updateHistoryCount();
     if (reloadAttempted) { reloadAttempted = false; history.replaceState(null, '', location.pathname); }
   } catch (error) {
-    if (error.message === OLD_WIDTH_ERROR && !reloadAttempted) {
+    if (!isExtension && (error.name === 'AbortError' || webCaptureController?.signal.aborted)) message('已取消生成，可以调整设置后重试。');
+    else if (isExtension && error.message === OLD_WIDTH_ERROR && !reloadAttempted) {
       try { await reloadOldEngine(); } catch (reloadError) { message(`重新加载失败：${reloadError.message}。请在扩展管理页重新加载拾页后重试。`, true); }
     } else message(error.message === OLD_WIDTH_ERROR ? '拾页后台仍是旧版。请完整解压最新版插件，在扩展管理页重新加载后再试；网页来源已保留。' : error.message, true);
-  } finally { if (!extensionReloading) setBusy(false); }
+  } finally { webCaptureController = null; if (!extensionReloading) setBusy(false); }
 }
 async function reloadOldEngine() {
   // Only the old engine's explicit validation error triggers this path. A busy
@@ -224,7 +245,7 @@ async function download() {
       catch (error) { URL.revokeObjectURL(url); throw error; }
     } else { const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
     const plan = planRasterExport(state.record.width, state.record.height, state.format);
-    message(`已创建 ${filename}（${bytes(blob.size)}${plan.scaled ? ` · ${plan.width} × ${plan.height} px，保留完整内容` : ''}），请在下载窗口选择保存位置。`);
+    message(`已创建 ${filename}（${bytes(blob.size)}${plan.scaled ? ` · ${plan.width} × ${plan.height} px，保留完整内容` : ''}），${isExtension ? '请在下载窗口选择保存位置。' : '请在浏览器下载记录中查看。'}`);
   } catch (error) { if (/canceled|cancelled/i.test(error.message)) message('已取消保存，你仍然可以重新导出。'); else message(error.message || '导出失败，请降低清晰度后重试。', true); }
   finally { setBusy(false); }
 }
@@ -254,7 +275,7 @@ async function resetSource() {
   initialTabId = null; tabSelectionCleared = true;
   const previous = state.htmlId;
   state.files = []; state.entryPath = null; state.htmlId = null; state.importWarnings = [];
-  for (const id of ['file-input', 'folder-input', 'url-input']) $(id).value = '';
+  for (const id of ['file-input', 'folder-input', 'url-input', 'html-code']) $(id).value = '';
   $('html-entry').replaceChildren(); $('entry-wrap').hidden = true;
   $('tab-select').replaceChildren(new Option('请选择一个已打开的网页', ''));
   $('file-title').textContent = '把 HTML 文件拖到这里';
@@ -278,23 +299,43 @@ function applyCaptureOptions(options) {
   selectScale([1, 2, 3].includes(options.scale) ? options.scale : 1, false);
 }
 async function savePreferences() {
-  if (!isExtension || !preferencesReady) return;
+  if (!preferencesReady) return;
   let options;
   try { options = captureOptions(); } catch { return; }
   let preferredCustomWidth = 1024;
   try { preferredCustomWidth = customWidth(); } catch {}
-  await chrome.storage.local.set({ preferences: { ...options, widthMode: $('width').value === 'custom' ? 'custom' : 'preset', customWidth: preferredCustomWidth, format: state.format, quality: Number($('quality').value), pdfLayout: $('pdf-layout').value, pdfMargin: $('pdf-margin').value } }).catch(() => {});
+  const preferences = { ...options, widthMode: $('width').value === 'custom' ? 'custom' : 'preset', customWidth: preferredCustomWidth, format: state.format, quality: Number($('quality').value), pdfLayout: $('pdf-layout').value, pdfMargin: $('pdf-margin').value };
+  if (isExtension) await chrome.storage.local.set({ preferences }).catch(() => {});
+  else { try { localStorage.setItem('snapline.preferences', JSON.stringify(preferences)); } catch {} }
 }
 function showHelp() { if (!$('help-dialog').open) $('help-dialog').showModal(); }
+function configureWebInterface() {
+  document.body.classList.add('web-mode');
+  document.title = '拾页 Snapline 网页版 · HTML 转图片与 PDF';
+  $('browser-notice').hidden = false;
+  $('source-tab').hidden = true; $('source-code').hidden = false;
+  $('extension-url-input').hidden = true; $('web-url-guide').hidden = false;
+  $('width').querySelector('option[value="0"]').textContent = '使用当前窗口宽度';
+  document.querySelector('.page-heading p').textContent = '本地 HTML、网页代码，一键留下完整的精彩。';
+  const steps = [...document.querySelectorAll('#help-dialog .help-step')];
+  document.querySelector('#help-dialog .dialog-heading h2').textContent = '拾页网页版使用说明';
+  steps[0].querySelector('h3').textContent = '导入文件，或粘贴代码';
+  steps[0].querySelector('p').textContent = '选择本地 HTML 文件；有配套图片或 CSS 时导入整个文件夹。也可以切换到「粘贴 HTML」，直接输入网页代码，或点击「试试示例网页」。';
+  steps[1].querySelector('h3').textContent = '选好尺寸，生成预览';
+  steps[1].querySelector('p').textContent = '选择完整网页或当前可见区域，设置手机、平板、桌面或自定义宽度，再点击「生成预览」。修改代码、宽度或清晰度后，需要重新生成。';
+  steps[2].querySelector('h3').textContent = '下载图片与 PDF';
+  steps[2].querySelector('p').textContent = '预览就绪后，可保存为 PNG、JPG、WebP 或 PDF。最近 12 次预览保存在当前浏览器中，可重新打开导出；重置来源不会删除历史记录。';
+  document.querySelector('#help-dialog .help-note p').innerHTML = '在线网站、已登录网页和需要执行脚本的动态页面，请使用<a href="https://github.com/jokerlixing/snapline-chrome-extension/releases/latest" target="_blank" rel="noopener noreferrer">拾页 Chrome 插件</a>。网页版不执行导入网页的脚本；图片和样式建议随文件夹一起导入。';
+}
 
 renderIcons();
 for (const button of document.querySelectorAll('[data-source]')) button.addEventListener('click', () => selectSource(button.dataset.source));
-document.querySelector('.source-tabs').addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const tabs = [...document.querySelectorAll('[data-source]')]; const index = tabs.findIndex(tab => tab.dataset.source === state.source); const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3; selectSource(tabs[next].dataset.source); tabs[next].focus(); });
+document.querySelector('.source-tabs').addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const tabs = [...document.querySelectorAll('[data-source]')].filter(tab => !tab.hidden); const index = tabs.findIndex(tab => tab.dataset.source === state.source); const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length; selectSource(tabs[next].dataset.source); tabs[next].focus(); });
 for (const button of document.querySelectorAll('[data-format]')) button.addEventListener('click', () => selectFormat(button.dataset.format));
 for (const button of document.querySelectorAll('[data-scale]')) button.addEventListener('click', () => selectScale(Number(button.dataset.scale)));
 for (const id of ['width', 'scope', 'delay', 'lazy-load', 'transparent']) $(id).addEventListener('change', () => { updateWidthField(); markStale(); savePreferences(); });
 $('custom-width').addEventListener('input', () => { markStale(); savePreferences(); });
-for (const id of ['url-input', 'tab-select']) $(id).addEventListener('input', markStale);
+for (const id of ['url-input', 'tab-select', 'html-code']) $(id).addEventListener('input', markStale);
 $('tab-select').addEventListener('input', () => { tabSelectionCleared = !$('tab-select').value; });
 $('quality').addEventListener('input', () => { $('quality-value').textContent = `${$('quality').value}%`; savePreferences(); });
 for (const id of ['pdf-layout', 'pdf-margin']) $(id).addEventListener('change', savePreferences);
@@ -304,7 +345,7 @@ $('html-entry').addEventListener('change', () => importFiles(state.files, $('htm
 $('dropzone').addEventListener('dragover', event => { event.preventDefault(); if (!state.busy) $('dropzone').classList.add('drag-over'); });
 $('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('drag-over'));
 $('dropzone').addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('drag-over'); if (!state.busy) importFiles([...event.dataTransfer.files]); });
-$('demo-button').addEventListener('click', async () => { const version = importVersion; try { const response = await fetch('assets/demo.html'); if (!response.ok) throw new Error('示例文件未找到，请重新安装完整的插件。'); const html = await response.text(); if (version !== importVersion) return; await importFiles([new File([html], '拾页示例.html', { type: 'text/html' })]); if (state.htmlId && isExtension) await capture(); } catch (error) { if (version === importVersion) message(error.message, true); } });
+$('demo-button').addEventListener('click', async () => { const version = importVersion; try { const response = await fetch('assets/demo.html'); if (!response.ok) throw new Error('示例文件未找到，请刷新页面后重试。'); const html = await response.text(); if (version !== importVersion) return; await importFiles([new File([html], '拾页示例.html', { type: 'text/html' })]); if (state.htmlId) await capture(); } catch (error) { if (version === importVersion) message(error.message, true); } });
 $('refresh-tabs').addEventListener('click', () => refreshTabs().catch(error => message(error.message, true)));
 $('reset-source').addEventListener('click', resetSource);
 $('capture-button').addEventListener('click', capture); $('export-button').addEventListener('click', download);
@@ -313,18 +354,23 @@ $('nav-history').addEventListener('click', () => showHistory().catch(error => no
 $('clear-history').addEventListener('click', async () => { const records = await listItems('capture'); for (const record of records) await deleteItem(record.id); resetPreview(); await showHistory(); await updateHistoryCount(); notify('本机预览记录已清空'); });
 for (const id of ['help-button', 'top-help', 'install-help']) $(id).addEventListener('click', showHelp); $('close-help').addEventListener('click', () => $('help-dialog').close()); $('help-dialog').addEventListener('click', event => { if (event.target === $('help-dialog')) { const r = $('help-dialog').getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) $('help-dialog').close(); } });
 document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('help-dialog').open && !state.busy) { event.preventDefault(); capture(); } });
-window.addEventListener('pagehide', () => { if (extensionReloading) return; for (const id of ephemeralHtml) deleteItem(id).catch(() => {}); if (state.capturing) chrome.runtime.sendMessage({ type: 'SL_CANCEL' }).catch(() => {}); });
+window.addEventListener('pagehide', () => { if (extensionReloading) return; for (const id of ephemeralHtml) deleteItem(id).catch(() => {}); if (state.capturing) { if (isExtension) chrome.runtime.sendMessage({ type: 'SL_CANCEL' }).catch(() => {}); else webCaptureController?.abort(); } });
 
 async function initialize() {
+  let preferences;
+  if (isExtension) ({ preferences } = await chrome.storage.local.get('preferences'));
+  else {
+    try { preferences = JSON.parse(localStorage.getItem('snapline.preferences')); } catch {}
+    configureWebInterface();
+  }
+  if (preferences) { applyCaptureOptions(preferences); if (['png', 'jpeg', 'webp', 'pdf'].includes(preferences.format)) selectFormat(preferences.format); $('quality').value = preferences.quality || 92; $('quality-value').textContent = `${$('quality').value}%`; if (['a4', 'letter', 'long'].includes(preferences.pdfLayout)) $('pdf-layout').value = preferences.pdfLayout; if (['0', '10', '20'].includes(preferences.pdfMargin)) $('pdf-margin').value = preferences.pdfMargin; }
   if (isExtension) {
-    const { preferences } = await chrome.storage.local.get('preferences');
-    if (preferences) { applyCaptureOptions(preferences); if (['png', 'jpeg', 'webp', 'pdf'].includes(preferences.format)) selectFormat(preferences.format); $('quality').value = preferences.quality || 92; $('quality-value').textContent = `${$('quality').value}%`; if (['a4', 'letter', 'long'].includes(preferences.pdfLayout)) $('pdf-layout').value = preferences.pdfLayout; if (['0', '10', '20'].includes(preferences.pdfMargin)) $('pdf-margin').value = preferences.pdfMargin; }
     chrome.runtime.onMessage.addListener(message => { if (message.type === 'SL_PROGRESS' && state.capturing) progress(message.stage, message.percent); });
     chrome.downloads.onChanged.addListener(delta => { if (!downloadUrls.has(delta.id) || !delta.state || !['complete', 'interrupted'].includes(delta.state.current)) return; URL.revokeObjectURL(downloadUrls.get(delta.id)); downloadUrls.delete(delta.id); if (delta.state.current === 'complete') notify('文件已保存到电脑'); else notify('下载已取消或中断，可以再次导出'); });
-  } else $('browser-notice').hidden = false;
+  }
   preferencesReady = true;
   if (await restoreReloadSession()) { await updateHistoryCount(); return; }
-  selectSource(new URLSearchParams(location.search).has('tab') ? 'tab' : 'html', false);
+  selectSource(isExtension && new URLSearchParams(location.search).has('tab') ? 'tab' : 'html', false);
   await updateHistoryCount();
 }
 initialize().catch(error => message(error.message, true));

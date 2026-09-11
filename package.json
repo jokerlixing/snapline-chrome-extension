@@ -1,10 +1,13 @@
 {
   "name": "snapline-chrome-extension",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/build-web.mjs",
+    "build:extension": "node scripts/build.mjs",
+    "build:web": "node scripts/build-web.mjs",
     "test": "node --test tests/*.test.js",
     "test:e2e": "node tests/e2e.mjs",
     "check": "npm run test && npm run build",
@@ -14,9 +17,12 @@
     "test:scroll": "node tests/scroll-capture-e2e.mjs",
     "test:full-export": "node tests/full-export-e2e.mjs",
     "test:upgrade": "node tests/upgrade-e2e.mjs",
-    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:full-export && npm run test:upgrade"
+    "test:web": "node tests/web-e2e.mjs",
+    "test:web-engine": "node tests/web-capture-e2e.mjs",
+    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:full-export && npm run test:upgrade && npm run test:web-engine && npm run test:web"
   },
   "dependencies": {
+    "html2canvas": "1.4.1",
     "jspdf": "^4.2.1",
     "lucide": "^0.468.0"
   },
