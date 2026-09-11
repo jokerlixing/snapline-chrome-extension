@@ -3,6 +3,8 @@ export const CAPTURE_LIMITS = Object.freeze({
   maxPixels: 64_000_000,
   maxHtmlBytes: 60 * 1024 * 1024,
   maxDelay: 10000,
+  minWidth: 200,
+  maxWidth: 7680,
 });
 
 export function normalizeCaptureOptions(input = {}) {
@@ -11,7 +13,7 @@ export function normalizeCaptureOptions(input = {}) {
   const scale = input.scale ?? 1;
   const scope = input.scope ?? 'full';
   const delay = input.delay ?? 1000;
-  if (![0, 390, 768, 1440].includes(width)) throw new Error('请选择原始宽度、手机、平板或桌面尺寸。');
+  if (width !== 0 && (!Number.isInteger(width) || width < CAPTURE_LIMITS.minWidth || width > CAPTURE_LIMITS.maxWidth)) throw new Error('自定义宽度请输入 200 到 7680 之间的整数像素。');
   if (![1, 2, 3].includes(scale)) throw new Error('清晰度仅支持 1×、2× 和 3×。');
   if (!['full', 'viewport'].includes(scope)) throw new Error('请选择整页或当前可见区域。');
   if (!Number.isFinite(delay) || delay < 0 || delay > CAPTURE_LIMITS.maxDelay) throw new Error('等待时间应为 0 到 10 秒。');

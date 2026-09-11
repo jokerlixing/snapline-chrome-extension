@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const out = resolve('dist/snapline');
+const manifest = JSON.parse(await readFile('extension/manifest.json', 'utf8'));
 if (out !== resolve(process.cwd(), 'dist', 'snapline')) throw new Error('Invalid build output directory.');
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
@@ -19,7 +20,7 @@ for (const name of ['jspdf', 'lucide', 'fflate', 'fast-png', 'iobuffer', 'pako',
 }
 await writeFile(`${out}/THIRD-PARTY-NOTICES.txt`, licenses.join('\n-------------------------\n\n'));
 if (process.platform === 'win32') {
-  const archive = resolve('dist/拾页-Snapline-v1.0.0.zip');
+  const archive = resolve(`dist/拾页-Snapline-v${manifest.version}.zip`);
   const escape = value => `'${value.replaceAll("'", "''")}'`;
   const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', `Compress-Archive -LiteralPath ${escape(out)} -DestinationPath ${escape(archive)} -Force`], { encoding: 'utf8', windowsHide: true });
   if (result.status !== 0) throw new Error(result.stderr);

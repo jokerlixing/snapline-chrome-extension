@@ -1,5 +1,6 @@
 import { putItem, getItem, pruneCaptures } from './lib/store.js';
 import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, utf8ToBase64, base64ToBlob, captureErrorMessage } from './lib/capture-utils.js';
+import { scrollRegion } from './lib/scroll-region.js';
 
 const UI_URL = chrome.runtime.getURL('index.html');
 let currentJob = null;
@@ -168,6 +169,63 @@ async function loadLazyContent(job, contextId, restorePosition) {
   }, [restorePosition.x, restorePosition.y], contextId);
 }
 
+async function captureScrollRegion(job, contextId, options, warnings) {
+  let region = await evaluate(job, scrollRegion, ['prepare'], contextId);
+  if (!region) return null;
+  let canvas;
+  try {
+    if (options.lazyLoad) {
+      await progress('正在加载网页主滚动区域', 45);
+      const deadline = Date.now() + 9000;
+      let previousHeight = 0;
+      let stableBottom = 0;
+      for (let step = 0, top = 0; step < 150; step++) {
+        checkJob(job);
+        region = await evaluate(job, scrollRegion, ['scroll', { top, assets: true }], contextId);
+        const atBottom = region.top + region.clientHeight >= region.totalHeight - 2;
+        stableBottom = atBottom && previousHeight === region.totalHeight ? stableBottom + 1 : 0;
+        if (stableBottom >= 2) break;
+        if (Date.now() > deadline || step === 149) { warnings.push('已停止自动加载持续增长的滚动区域，将截取当前已加载的内容。'); break; }
+        previousHeight = region.totalHeight;
+        top = Math.min(region.totalHeight - region.clientHeight, region.top + Math.max(100, Math.floor(region.height * .8)));
+      }
+    }
+    region = await evaluate(job, scrollRegion, ['scroll', { top: 0, assets: options.lazyLoad }], contextId);
+    const geometry = calculateCaptureGeometry({ cssVisualViewport: { clientWidth: region.width, clientHeight: region.height }, cssContentSize: { width: region.width, height: region.totalHeight } }, options);
+    canvas = new OffscreenCanvas(geometry.width, geometry.height);
+    const drawing = canvas.getContext('2d');
+    if (!drawing) throw new Error('无法分配长网页画布，请降低清晰度后重试。');
+    const totalHeight = region.totalHeight;
+    const deadline = Date.now() + 90000;
+    let covered = 0;
+    for (let step = 0; covered < geometry.height; step++) {
+      checkJob(job);
+      if (step >= 200 || Date.now() > deadline) throw new Error('滚动区域截图耗时过长，请等待网页加载稳定或降低清晰度后重试。');
+      region = await evaluate(job, scrollRegion, ['scroll', { top: covered / options.scale, assets: options.lazyLoad, wait: Math.max(180, Math.min(options.delay, 1000)) }], contextId);
+      if (Math.abs(region.totalHeight - totalHeight) > 2) throw new Error('滚动区域的内容仍在变化，请等待网页加载完成后重新生成预览。');
+      await progress('正在拼接完整滚动区域', 65 + Math.round(covered / geometry.height * 22));
+      const shot = await command(job, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false, clip: { x: region.x, y: region.y, width: region.width, height: region.height, scale: 1 } }, 45000);
+      if (!shot.data) throw new Error('没有收到滚动区域截图，请重新生成。');
+      const bitmap = await createImageBitmap(base64ToBlob(shot.data));
+      try {
+        // The last scroll is clamped by the browser. Skip its already-captured
+        // overlap so every output row is covered once, including the page end.
+        const offset = covered - Math.round(region.top * options.scale);
+        const rows = Math.min(bitmap.height - offset, geometry.height - covered);
+        if (offset < 0 || rows <= 0) throw new Error('无法继续滚动到网页末尾，请检查页面滚动区域后重试。');
+        drawing.drawImage(bitmap, 0, offset, bitmap.width, rows, 0, covered, geometry.width, rows);
+        covered += rows;
+      } finally { bitmap.close(); }
+    }
+    const blob = await canvas.convertToBlob({ type: 'image/png' });
+    warnings.push('已完整截取网页的主滚动区域。');
+    return { blob, geometry };
+  } finally {
+    if (canvas) { canvas.width = 0; canvas.height = 0; }
+    await evaluate(job, scrollRegion, ['restore'], contextId, true).catch(() => {});
+  }
+}
+
 async function capture(source, rawOptions, job) {
   const options = normalizeCaptureOptions(rawOptions);
   if (!source || !['tab', 'url', 'html'].includes(source.kind)) throw new Error('请先选择要转换的网页或 HTML 文件。');
@@ -227,6 +285,7 @@ async function capture(source, rawOptions, job) {
     contextId = ready.contextId;
     if (ready.timedOut) warnings.push('网页加载超过 25 秒，已按当前加载的内容生成。');
     original = await evaluate(job, () => ({ width: innerWidth, height: innerHeight, x: scrollX, y: scrollY, title: document.title, url: location.href }), [], contextId);
+    if (options.scope === 'full') original.innerScroll = await evaluate(job, scrollRegion, ['position'], contextId);
     if (source.kind !== 'html') {
       if (!isCapturableUrl(original.url)) throw new Error('网页跳转到了 Chrome 不允许截图的页面，请选择其他网页。');
       sourceUrl = original.url;
@@ -243,7 +302,7 @@ async function capture(source, rawOptions, job) {
     }
     await sleep(180);
     let geometry;
-    let screenshot;
+    let blob;
     // Responsive pages may reload or redirect when their width changes. Each
     // attempt uses the current document; keep the original viewport for cleanup.
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -267,12 +326,17 @@ async function capture(source, rawOptions, job) {
         if (options.scope === 'full') await evaluate(job, () => window.scrollTo({ left: 0, top: 0, behavior: 'instant' }), [], contextId);
         else await evaluate(job, (x, y) => window.scrollTo({ left: x, top: y, behavior: 'instant' }), [original.x, original.y], contextId);
         await sleep(160);
-        const metrics = await command(job, 'Page.getLayoutMetrics');
-        geometry = calculateCaptureGeometry(metrics, options);
-        await progress('正在生成高清截图', 72);
-        screenshot = await command(job, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: options.scope === 'full', clip: geometry.clip, optimizeForSpeed: false }, 45000);
+        const nested = options.scope === 'full' ? await captureScrollRegion(job, contextId, options, attemptWarnings) : null;
+        if (nested) { geometry = nested.geometry; blob = nested.blob; }
+        else {
+          const metrics = await command(job, 'Page.getLayoutMetrics');
+          geometry = calculateCaptureGeometry(metrics, options);
+          await progress('正在生成高清截图', 72);
+          const screenshot = await command(job, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: options.scope === 'full', clip: geometry.clip, optimizeForSpeed: false }, 45000);
+          if (!screenshot.data) throw new Error('没有收到截图数据，请重新生成。');
+          blob = base64ToBlob(screenshot.data);
+        }
         checkJob(job);
-        if (!screenshot.data) throw new Error('没有收到截图数据，请重新生成。');
         // Verify that the document used to prepare the screenshot still exists,
         // and keep history metadata in sync with any responsive redirect.
         const captured = await evaluate(job, () => ({ title: document.title, url: location.href }), [], contextId);
@@ -292,7 +356,6 @@ async function capture(source, rawOptions, job) {
       }
     }
     await progress('正在保存到本地记录', 92);
-    const blob = base64ToBlob(screenshot.data);
     const result = { id: `capture-${crypto.randomUUID()}`, title: String(title || '网页截图').slice(0, 240), url: sourceUrl, width: geometry.width, height: geometry.height, createdAt: Date.now(), byteSize: blob.size, warnings };
     await putItem({ ...result, kind: 'capture', blob, options });
     await pruneCaptures(12).catch(() => { warnings.push('旧的截图记录暂时未能清理，可稍后手动删除。'); });
@@ -311,6 +374,7 @@ async function capture(source, rawOptions, job) {
         await (async () => {
           const restored = await waitForDocument(job, undefined, false, true);
           await evaluate(job, (x, y) => window.scrollTo({ left: x, top: y, behavior: 'instant' }), [original.x, original.y], restored.contextId, true);
+          if (original.innerScroll) await evaluate(job, scrollRegion, ['position', original.innerScroll], restored.contextId, true);
         })().catch(() => {});
       }
       await chrome.debugger.detach(job.target).catch(() => {});

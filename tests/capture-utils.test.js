@@ -10,6 +10,11 @@ test('capture options have useful defaults and reject oversized or malformed val
   assert.equal(normalizeCaptureOptions({ delay: 0, transparent: true }).delay, 0);
 });
 
+test('custom capture widths accept integer pixel sizes and reject invalid values', () => {
+  for (const width of [0, 200, 390, 768, 1024, 1440, 2560, 7680]) assert.equal(normalizeCaptureOptions({ width }).width, width);
+  for (const width of [199, 7681, -1, 200.5, NaN, Infinity, '1024', 'custom', '']) assert.throws(() => normalizeCaptureOptions({ width }), /200 到 7680/);
+});
+
 test('web address normalization accepts normal web pages and rejects credentials and executable schemes', () => {
   assert.equal(normalizeWebUrl('example.com/path?q=hello'), 'https://example.com/path?q=hello');
   assert.equal(normalizeWebUrl(' http://localhost:3000/test '), 'http://localhost:3000/test');

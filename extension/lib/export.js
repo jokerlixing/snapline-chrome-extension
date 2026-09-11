@@ -22,6 +22,15 @@ export function planPdfPages(width, height, layout = 'a4', margin = 10) {
   return { paperWidth, paperHeight, imageWidth, margin, slices };
 }
 
+export function planRasterExport(width, height, format) {
+  if (![width, height].every(value => Number.isInteger(value) && value > 0)) throw new Error('截图尺寸无效，请重新生成预览。');
+  // Lossy WebP uses 14-bit dimensions. Chromium can silently crop larger
+  // canvases, so fit the entire image within the format limit before encoding.
+  // https://developers.google.com/speed/webp/faq#what_is_the_maximum_size_a_webp_image_can_be
+  const scale = format === 'webp' ? Math.min(1, 16383 / Math.max(width, height)) : 1;
+  return { width: Math.max(1, Math.floor(width * scale)), height: Math.max(1, Math.floor(height * scale)), scaled: scale < 1 };
+}
+
 export async function encodeExport(record, { format, quality = 92, layout = 'a4', margin = 10 }) {
   if (!record?.blob) throw new Error('请先生成网页预览。');
   if (!['png', 'jpeg', 'webp', 'pdf'].includes(format)) throw new Error('请选择一种有效的导出格式。');
@@ -29,15 +38,21 @@ export async function encodeExport(record, { format, quality = 92, layout = 'a4'
   const bitmap = await createImageBitmap(record.blob);
   const canvas = document.createElement('canvas');
   try {
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
+    const output = planRasterExport(bitmap.width, bitmap.height, format);
+    canvas.width = output.width;
+    canvas.height = output.height;
     const context = canvas.getContext('2d');
     if (!context) throw new Error('无法分配图片画布，请降低清晰度。');
     if (format === 'jpeg' || format === 'pdf') { context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height); }
-    context.drawImage(bitmap, 0, 0);
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     if (format !== 'pdf') {
       const blob = await new Promise(resolve => canvas.toBlob(resolve, `image/${format}`, Math.max(.3, Math.min(1, quality / 100))));
       if (!blob || blob.type !== `image/${format}`) throw new Error('浏览器无法生成这个格式，请改用 PNG。');
+      const encoded = await createImageBitmap(blob);
+      try {
+        if (encoded.width !== canvas.width || encoded.height !== canvas.height) throw new Error('导出的图片尺寸不完整，请改用 PNG 或 PDF。');
+      } finally { encoded.close(); }
       return blob;
     }
     const plan = planPdfPages(canvas.width, canvas.height, layout, margin);

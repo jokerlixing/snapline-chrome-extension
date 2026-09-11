@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Chat layout export fixture</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff}body{display:flex}aside{width:88px;flex:none;background:#dce1e6}main{flex:1;min-width:0;height:100vh;display:flex;flex-direction:column}header{height:60px;flex:none;background:#fff}.scroll-outer{display:flex;flex:1;min-height:0}.conversation{flex:1;min-width:0;overflow-y:auto;scroll-behavior:smooth}.messages{height:3600px;position:relative;background:#e7ebef}.top,.middle,.bottom{position:absolute;left:0;width:100%;height:200px}.top{top:0;background:rgb(180,50,70)}.middle{top:1700px;background:rgb(60,100,200)}.bottom{bottom:0;background:rgb(40,180,100)}footer{height:80px;flex:none;background:#fff}</style>
+</head><body><aside>Sidebar</aside><main><header>Conversation</header><div class="scroll-outer"><div class="conversation"><div class="messages"><div class="top">CONVERSATION TOP</div><div class="middle">CONVERSATION MIDDLE</div><div class="bottom">CONVERSATION BOTTOM</div></div></div></div><footer>Composer</footer></main>
+<script>
+  if (new URLSearchParams(location.search).has('virtual')) {
+    const scroller = document.querySelector('.conversation');
+    const messages = document.querySelector('.messages');
+    const markers = [{ name: 'top', y: 0 }, { name: 'middle', y: 1700 }, { name: 'bottom', y: 3400 }];
+    function render() {
+      const visible = markers.filter(marker => marker.y < scroller.scrollTop + scroller.clientHeight && marker.y + 200 > scroller.scrollTop);
+      messages.replaceChildren(...visible.map(marker => {
+        const element = document.createElement('div'); element.className = marker.name; element.textContent = `VIRTUAL ${marker.name}`; return element;
+      }));
+    }
+    scroller.addEventListener('scroll', () => requestAnimationFrame(render));
+    new ResizeObserver(render).observe(scroller); render();
+  }
+</script></body></html>

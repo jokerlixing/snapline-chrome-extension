@@ -1,7 +1,7 @@
 import { createIcons, ScanLine, PanelsTopLeft, History, ShieldCheck, CircleHelp, ArrowUpRight, BookOpen, Scan, FileCode2, Globe2, FolderUp, RefreshCw, Link, Info, ArrowRight, Minus, Plus, Asterisk, ArrowDownRight, Image, SlidersHorizontal, FileText, ChevronDown, Download, Trash2, Sparkles, X } from 'lucide';
 import { putItem, getItem, deleteItem, listItems } from './lib/store.js';
 import { packHtml, listHtmlEntries } from './lib/import-html.js';
-import { encodeExport, safeFilename } from './lib/export.js';
+import { encodeExport, planRasterExport, safeFilename } from './lib/export.js';
 
 const $ = id => document.getElementById(id);
 const icons = { ScanLine, PanelsTopLeft, History, ShieldCheck, CircleHelp, ArrowUpRight, BookOpen, Scan, FileCode2, Globe2, FolderUp, RefreshCw, Link, Info, ArrowRight, Minus, Plus, Asterisk, ArrowDownRight, Image, SlidersHorizontal, FileText, ChevronDown, Download, Trash2, Sparkles, X };
@@ -10,6 +10,9 @@ const isExtension = location.protocol === 'chrome-extension:' && Boolean(globalT
 const state = { source: 'html', format: 'png', scale: 1, files: [], entryPath: null, htmlId: null, record: null, stale: false, busy: false, capturing: false, zoom: 'fit', previewUrl: null, historyUrls: [], importWarnings: [] };
 let toastTimer;
 let importVersion = 0;
+let tabsVersion = 0;
+let initialTabId = new URLSearchParams(location.search).get('tab');
+let tabSelectionCleared = false;
 const ephemeralHtml = new Set();
 const downloadUrls = new Map();
 let preferencesReady = false;
@@ -18,7 +21,14 @@ function notify(text) { $('toast').textContent = text; $('toast').hidden = false
 function message(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); $('message').hidden = !text; }
 function warnings(items) { $('warning-box').replaceChildren(); const unique = [...new Set(items || [])]; $('warning-box').hidden = !unique.length; if (unique.length) { const ul = document.createElement('ul'); for (const warning of unique) { const li = document.createElement('li'); li.textContent = warning; ul.append(li); } $('warning-box').append(ul); } }
 function bytes(n) { return n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`; }
-function captureOptions() { return { width: Number($('width').value), scope: $('scope').value, scale: state.scale, delay: Number($('delay').value), lazyLoad: $('lazy-load').checked, transparent: $('transparent').checked }; }
+function customWidth() {
+  const raw = $('custom-width').value.trim();
+  const width = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isInteger(width) || width < 200 || width > 7680) throw new Error('自定义宽度请输入 200–7680 之间的整数（px）。');
+  return width;
+}
+function updateWidthField() { $('custom-width-field').hidden = $('width').value !== 'custom'; }
+function captureOptions() { return { width: $('width').value === 'custom' ? customWidth() : Number($('width').value), scope: $('scope').value, scale: state.scale, delay: Number($('delay').value), lazyLoad: $('lazy-load').checked, transparent: $('transparent').checked }; }
 function setBusy(value, capture = false) {
   state.busy = value; state.capturing = value && capture;
   for (const element of document.querySelectorAll('.source-card button, .source-card input, .source-card select, .settings-card input, .settings-card select, .settings-card button, #clear-history, #nav-history, #nav-workbench')) element.disabled = value;
@@ -30,6 +40,12 @@ function setBusy(value, capture = false) {
 }
 function progress(stage, percent) { $('progress-text').textContent = stage; $('progress-bar').style.width = `${Math.min(100, Math.max(0, percent))}%`; }
 function markStale() { if (!state.record) return; state.stale = true; $('preview-badge').textContent = '需要重新生成'; $('preview-badge').className = 'badge stale'; $('export-button').disabled = true; $('export-hint').textContent = '设置已改变，请重新生成预览'; }
+function updateExportHint() {
+  if (!state.record) { $('export-hint').textContent = '先生成预览，再保存到电脑'; return; }
+  if (state.stale) { $('export-hint').textContent = '设置已改变，请重新生成预览'; return; }
+  const plan = planRasterExport(state.record.width, state.record.height, state.format);
+  $('export-hint').textContent = plan.scaled ? `超长网页按 WebP 格式上限等比缩小至 ${plan.width} × ${plan.height} px，保留完整内容` : '预览已就绪，可以切换格式导出';
+}
 function selectSource(kind, stale = true) {
   state.source = kind;
   for (const button of document.querySelectorAll('[data-source]')) { const selected = button.dataset.source === kind; button.classList.toggle('selected', selected); button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; }
@@ -44,15 +60,20 @@ function selectFormat(format) {
   $('pdf-fields').hidden = format !== 'pdf';
   $('file-extension').textContent = `.${format === 'jpeg' ? 'jpg' : format}`;
   $('export-button').querySelector('span').textContent = `导出 ${format === 'jpeg' ? 'JPG' : format === 'webp' ? 'WebP' : format.toUpperCase()}`;
+  updateExportHint();
   savePreferences();
 }
 function selectScale(scale, stale = true) { state.scale = scale; for (const button of document.querySelectorAll('[data-scale]')) { const selected = Number(button.dataset.scale) === scale; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); } $('scale-description').textContent = { 1: '日常使用', 2: '适合分享与放大', 3: '更多细节，更大文件' }[scale]; if (stale) markStale(); savePreferences(); }
 async function rpc(payload) { if (!isExtension) throw new Error('请先将拾页安装到 Chrome，再进行网页转换。点击左下方「使用帮助」查看安装步骤。'); const response = await chrome.runtime.sendMessage(payload); if (!response?.ok) throw new Error(response?.error || '插件连接中断，请刷新拾页后重试。'); return response; }
 async function refreshTabs() {
   if (!isExtension) { $('tab-select').replaceChildren(new Option('安装扩展后可选择浏览器标签页', '')); return; }
-  const previous = $('tab-select').value || new URLSearchParams(location.search).get('tab');
+  const version = ++tabsVersion;
+  const previous = $('tab-select').value || (!tabSelectionCleared ? initialTabId : '');
+  initialTabId = null;
   const { tabs } = await rpc({ type: 'SL_TABS' });
+  if (version !== tabsVersion) return;
   $('tab-select').replaceChildren();
+  if (tabSelectionCleared && tabs.length) $('tab-select').append(new Option('请选择一个已打开的网页', ''));
   for (const tab of tabs) { let host; try { host = new URL(tab.url).hostname || '本地文件'; } catch { host = ''; } $('tab-select').append(new Option(`${tab.title.slice(0, 55)} · ${host}`, String(tab.id))); }
   if (!tabs.length) $('tab-select').append(new Option('没有可转换的网页，请先打开一个网页', ''));
   if (tabs.some(tab => String(tab.id) === previous)) $('tab-select').value = previous;
@@ -95,8 +116,9 @@ async function capture() {
     if (state.source === 'html') { if (!state.htmlId) throw new Error('请先选择一个 HTML 文件，或点击「试试示例网页」。'); source = { kind: 'html', htmlId: state.htmlId }; }
     if (state.source === 'tab') { if (!$('tab-select').value) throw new Error('请先选择一个已打开的网页。'); source = { kind: 'tab', tabId: Number($('tab-select').value) }; }
     if (state.source === 'url') { if (!$('url-input').value.trim()) throw new Error('请先粘贴网页链接。'); source = { kind: 'url', url: $('url-input').value.trim() }; }
+    const options = captureOptions();
     setBusy(true, true); message(''); warnings([]);
-    const { result } = await rpc({ type: 'SL_CAPTURE', source, options: captureOptions() });
+    const { result } = await rpc({ type: 'SL_CAPTURE', source, options });
     const record = await getItem(result.id);
     if (!record) throw new Error('本地预览未能读取，请重新生成。');
     await showRecord(record);
@@ -117,7 +139,7 @@ async function showRecord(record) {
   $('preview-meta').textContent = `${record.width.toLocaleString()} × ${record.height.toLocaleString()} px`;
   $('preview-size').textContent = `${bytes(record.byteSize)} · 原始 PNG`;
   $('filename').value = record.title.slice(0, 100);
-  $('export-hint').textContent = '预览已就绪，可以切换格式导出';
+  updateExportHint();
   for (const id of ['zoom-in', 'zoom-out', 'zoom-fit']) $(id).disabled = false;
   $('export-button').disabled = state.busy;
   updateZoom();
@@ -135,7 +157,8 @@ async function download() {
       try { const id = await chrome.downloads.download({ url, filename, saveAs: true }); downloadUrls.set(id, url); }
       catch (error) { URL.revokeObjectURL(url); throw error; }
     } else { const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
-    message(`已创建 ${filename}（${bytes(blob.size)}），请在下载窗口选择保存位置。`);
+    const plan = planRasterExport(state.record.width, state.record.height, state.format);
+    message(`已创建 ${filename}（${bytes(blob.size)}${plan.scaled ? ` · ${plan.width} × ${plan.height} px，保留完整内容` : ''}），请在下载窗口选择保存位置。`);
   } catch (error) { if (/canceled|cancelled/i.test(error.message)) message('已取消保存，你仍然可以重新导出。'); else message(error.message || '导出失败，请降低清晰度后重试。', true); }
   finally { setBusy(false); }
 }
@@ -158,9 +181,44 @@ async function showHistory() {
   }
   renderIcons();
 }
-function resetPreview() { if (state.previewUrl) URL.revokeObjectURL(state.previewUrl); state.record = null; state.previewUrl = null; state.stale = false; $('preview-image').removeAttribute('src'); $('preview-image').hidden = true; $('empty-preview').hidden = false; $('preview-badge').textContent = '等待导入'; $('preview-badge').className = 'badge'; $('preview-meta').textContent = '完整呈现网页的每一个细节'; $('preview-size').textContent = 'PNG · JPG · WebP · PDF'; $('export-button').disabled = true; for (const id of ['zoom-in', 'zoom-out', 'zoom-fit']) $(id).disabled = true; message(''); warnings([]); }
-function applyCaptureOptions(options) { for (const id of ['width', 'scope', 'delay']) if (options[id] !== undefined) $(id).value = String(options[id]); $('lazy-load').checked = options.lazyLoad !== false; $('transparent').checked = options.transparent === true; selectScale([1, 2, 3].includes(options.scale) ? options.scale : 1, false); }
-async function savePreferences() { if (!isExtension || !preferencesReady) return; await chrome.storage.local.set({ preferences: { ...captureOptions(), format: state.format, quality: Number($('quality').value), pdfLayout: $('pdf-layout').value, pdfMargin: $('pdf-margin').value } }).catch(() => {}); }
+function resetPreview() { if (state.previewUrl) URL.revokeObjectURL(state.previewUrl); state.record = null; state.previewUrl = null; state.stale = false; state.zoom = 'fit'; $('preview-image').removeAttribute('src'); $('preview-image').style.removeProperty('width'); $('preview-image').hidden = true; $('empty-preview').hidden = false; $('preview-stage').scrollTo(0, 0); $('zoom-fit').textContent = '适应'; $('preview-badge').textContent = '等待导入'; $('preview-badge').className = 'badge'; $('preview-meta').textContent = '完整呈现网页的每一个细节'; $('preview-size').textContent = 'PNG · JPG · WebP · PDF'; $('export-hint').textContent = '先生成预览，再保存到电脑'; $('export-button').disabled = true; for (const id of ['zoom-in', 'zoom-out', 'zoom-fit']) $(id).disabled = true; message(''); warnings([]); }
+async function resetSource() {
+  if (state.busy) return;
+  ++importVersion; ++tabsVersion;
+  initialTabId = null; tabSelectionCleared = true;
+  const previous = state.htmlId;
+  state.files = []; state.entryPath = null; state.htmlId = null; state.importWarnings = [];
+  for (const id of ['file-input', 'folder-input', 'url-input', 'filename']) $(id).value = '';
+  $('html-entry').replaceChildren(); $('entry-wrap').hidden = true;
+  $('tab-select').replaceChildren(new Option('请选择一个已打开的网页', ''));
+  $('file-title').textContent = '把 HTML 文件拖到这里';
+  $('file-description').textContent = '支持 .html / .htm，有配套资源时可导入整个文件夹';
+  $('dropzone').classList.remove('drag-over');
+  clearTimeout(toastTimer); $('toast').textContent = ''; $('toast').hidden = true;
+  $('progress-wrap').hidden = true; $('progress-bar').style.width = '0%'; $('progress-text').textContent = '准备中…';
+  resetPreview();
+  if (previous) { ephemeralHtml.delete(previous); await deleteItem(previous).catch(() => {}); }
+  if (state.source === 'tab') await refreshTabs().catch(error => message(error.message, true));
+}
+function applyCaptureOptions(options) {
+  const width = options.width === '' || options.width == null ? NaN : Number(options.width);
+  const validWidth = Number.isInteger(width) && width >= 200 && width <= 7680;
+  if (validWidth && (options.widthMode === 'custom' || ![1440, 768, 390].includes(width))) { $('width').value = 'custom'; $('custom-width').value = String(width); }
+  else $('width').value = [0, 1440, 768, 390].includes(width) ? String(width) : '0';
+  if ($('width').value !== 'custom' && Number.isInteger(options.customWidth) && options.customWidth >= 200 && options.customWidth <= 7680) $('custom-width').value = String(options.customWidth);
+  updateWidthField();
+  for (const id of ['scope', 'delay']) if (options[id] !== undefined) $(id).value = String(options[id]);
+  $('lazy-load').checked = options.lazyLoad !== false; $('transparent').checked = options.transparent === true;
+  selectScale([1, 2, 3].includes(options.scale) ? options.scale : 1, false);
+}
+async function savePreferences() {
+  if (!isExtension || !preferencesReady) return;
+  let options;
+  try { options = captureOptions(); } catch { return; }
+  let preferredCustomWidth = 1024;
+  try { preferredCustomWidth = customWidth(); } catch {}
+  await chrome.storage.local.set({ preferences: { ...options, widthMode: $('width').value === 'custom' ? 'custom' : 'preset', customWidth: preferredCustomWidth, format: state.format, quality: Number($('quality').value), pdfLayout: $('pdf-layout').value, pdfMargin: $('pdf-margin').value } }).catch(() => {});
+}
 function showHelp() { if (!$('help-dialog').open) $('help-dialog').showModal(); }
 
 renderIcons();
@@ -168,8 +226,10 @@ for (const button of document.querySelectorAll('[data-source]')) button.addEvent
 document.querySelector('.source-tabs').addEventListener('keydown', event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); const tabs = [...document.querySelectorAll('[data-source]')]; const index = tabs.findIndex(tab => tab.dataset.source === state.source); const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : 2)) % 3; selectSource(tabs[next].dataset.source); tabs[next].focus(); });
 for (const button of document.querySelectorAll('[data-format]')) button.addEventListener('click', () => selectFormat(button.dataset.format));
 for (const button of document.querySelectorAll('[data-scale]')) button.addEventListener('click', () => selectScale(Number(button.dataset.scale)));
-for (const id of ['width', 'scope', 'delay', 'lazy-load', 'transparent']) $(id).addEventListener('change', () => { markStale(); savePreferences(); });
+for (const id of ['width', 'scope', 'delay', 'lazy-load', 'transparent']) $(id).addEventListener('change', () => { updateWidthField(); markStale(); savePreferences(); });
+$('custom-width').addEventListener('input', () => { markStale(); savePreferences(); });
 for (const id of ['url-input', 'tab-select']) $(id).addEventListener('input', markStale);
+$('tab-select').addEventListener('input', () => { tabSelectionCleared = !$('tab-select').value; });
 $('quality').addEventListener('input', () => { $('quality-value').textContent = `${$('quality').value}%`; savePreferences(); });
 for (const id of ['pdf-layout', 'pdf-margin']) $(id).addEventListener('change', savePreferences);
 $('choose-file').addEventListener('click', () => $('file-input').click()); $('choose-folder').addEventListener('click', () => $('folder-input').click());
@@ -178,8 +238,9 @@ $('html-entry').addEventListener('change', () => importFiles(state.files, $('htm
 $('dropzone').addEventListener('dragover', event => { event.preventDefault(); if (!state.busy) $('dropzone').classList.add('drag-over'); });
 $('dropzone').addEventListener('dragleave', () => $('dropzone').classList.remove('drag-over'));
 $('dropzone').addEventListener('drop', event => { event.preventDefault(); $('dropzone').classList.remove('drag-over'); if (!state.busy) importFiles([...event.dataTransfer.files]); });
-$('demo-button').addEventListener('click', async () => { try { const response = await fetch('assets/demo.html'); if (!response.ok) throw new Error('示例文件未找到，请重新安装完整的插件。'); await importFiles([new File([await response.text()], '拾页示例.html', { type: 'text/html' })]); if (state.htmlId && isExtension) await capture(); } catch (error) { message(error.message, true); } });
+$('demo-button').addEventListener('click', async () => { const version = importVersion; try { const response = await fetch('assets/demo.html'); if (!response.ok) throw new Error('示例文件未找到，请重新安装完整的插件。'); const html = await response.text(); if (version !== importVersion) return; await importFiles([new File([html], '拾页示例.html', { type: 'text/html' })]); if (state.htmlId && isExtension) await capture(); } catch (error) { if (version === importVersion) message(error.message, true); } });
 $('refresh-tabs').addEventListener('click', () => refreshTabs().catch(error => message(error.message, true)));
+$('reset-source').addEventListener('click', resetSource);
 $('capture-button').addEventListener('click', capture); $('export-button').addEventListener('click', download);
 $('zoom-out').addEventListener('click', () => changeZoom(-.15)); $('zoom-in').addEventListener('click', () => changeZoom(.15)); $('zoom-fit').addEventListener('click', () => { state.zoom = 'fit'; updateZoom(); }); new ResizeObserver(updateZoom).observe($('preview-stage'));
 $('nav-history').addEventListener('click', () => showHistory().catch(error => notify(error.message))); $('nav-workbench').addEventListener('click', () => setView(false));
