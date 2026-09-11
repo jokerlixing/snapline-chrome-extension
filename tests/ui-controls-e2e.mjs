@@ -39,7 +39,7 @@ async function assertReset(source) {
   assert.equal(await page.locator('#history-count').innerText(), historyCount);
   assert.equal(await page.locator('#width').inputValue(), width);
   assert.equal(await page.locator('[data-format][aria-pressed=true]').getAttribute('data-format'), format);
-  for (const id of ['file-input', 'folder-input', 'url-input', 'filename', 'tab-select']) assert.equal(await page.locator(`#${id}`).inputValue(), '');
+  for (const id of ['file-input', 'folder-input', 'url-input', 'tab-select']) assert.equal(await page.locator(`#${id}`).inputValue(), '');
   for (const id of ['zoom-in', 'zoom-out', 'zoom-fit']) assert.equal(await page.locator(`#${id}`).isDisabled(), true);
   assert.equal(await page.locator('#zoom-fit').innerText(), '适应');
   assert.equal(await page.locator('#preview-image').getAttribute('src'), null);

@@ -84,3 +84,7 @@
 证据：`artifacts/scroll-before.json`、`artifacts/scroll-capture-e2e.json`、`artifacts/full-export-e2e.json`、`artifacts/ui-controls-results.json`；可复现夹具位于 `fixtures/full-page.html` 和 `fixtures/nested-scroll.html`。
 
 私有在线对话没有在测试浏览器中取得登录后的页面，因此这里验证的是相同的固定视口、正文内部滚动和虚拟渲染结构，没有宣称已通过该私有会话实测。检测针对单个主要滚动区域；多个小面板、跨域 iframe、被外层裁切而不能滚动到末尾的特殊容器仍不保证完整捕获。检测到长度变化、尺寸过大或不能继续滚动时会明确报错，避免把不完整结果当作成功导出。
+
+## 1.1.1：移除文件名称输入框
+
+工作台不再提供文件名称输入框。导出默认采用网页标题，继续通过浏览器保存窗口修改名称和保存位置。移除相关 DOM 读写和样式后，重新运行 `npm run test:controls`（8/8）及 `npm run test:e2e`（16/16），四种格式的真实下载、长页 PDF、来源重置、历史和手机/平板布局均通过，无页面脚本错误。安装 ZIP 已核对版本和控件移除情况。

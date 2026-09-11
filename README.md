@@ -14,7 +14,7 @@
 4. 点击 Chrome 右上角的拼图图标，把 **拾页 Snapline** 固定到工具栏。
 5. 打开想保存的网页，点击拾页图标，进入工作台开始导出。
 
-如果拿到的是 `dist/拾页-Snapline-v1.1.0.zip`，先将压缩包完整解压，再加载解压后包含 `manifest.json` 的文件夹。不要把 ZIP 当作网页打开，也不要选择项目根目录。
+如果拿到的是 `dist/拾页-Snapline-v1.1.1.zip`，先将压缩包完整解压，再加载解压后包含 `manifest.json` 的文件夹。不要把 ZIP 当作网页打开，也不要选择项目根目录。
 
 Git 仓库保存源码、示例、测试和说明；已打包的安装文件在 Releases 中提供。下载仓库源码后，需要按「从源码构建」步骤生成 `dist/snapline`。
 
@@ -60,7 +60,7 @@ npm run build
 构建结果：
 
 - `dist/snapline/`：Chrome 可直接加载的扩展文件夹。
-- `dist/拾页-Snapline-v1.1.0.zip`：可分享的安装压缩包，需要解压后加载。
+- `dist/拾页-Snapline-v1.1.1.zip`：可分享的安装压缩包，需要解压后加载。
 
 开发验证：
 

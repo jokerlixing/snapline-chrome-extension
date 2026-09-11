@@ -58,7 +58,6 @@ function selectFormat(format) {
   for (const button of document.querySelectorAll('[data-format]')) { const selected = button.dataset.format === format; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); }
   $('quality-field').hidden = !['jpeg', 'webp'].includes(format);
   $('pdf-fields').hidden = format !== 'pdf';
-  $('file-extension').textContent = `.${format === 'jpeg' ? 'jpg' : format}`;
   $('export-button').querySelector('span').textContent = `导出 ${format === 'jpeg' ? 'JPG' : format === 'webp' ? 'WebP' : format.toUpperCase()}`;
   updateExportHint();
   savePreferences();
@@ -104,7 +103,6 @@ async function importFiles(files, entryPath) {
     $('file-description').textContent = `${files.length} 个文件 · ${bytes(files.reduce((n, file) => n + file.size, 0))} · 已准备好`;
     state.importWarnings = packed.warnings;
     selectSource('html');
-    $('filename').value = (packed.title || '我的网页').slice(0, 100);
     warnings(packed.warnings); message('文件已导入，点击「生成预览」查看效果。');
   } catch (error) { if (state.entryPath) $('html-entry').value = state.entryPath; message(error.message, true); } finally { setBusy(false); }
 }
@@ -138,7 +136,6 @@ async function showRecord(record) {
   $('preview-badge').textContent = '已就绪'; $('preview-badge').className = 'badge ready';
   $('preview-meta').textContent = `${record.width.toLocaleString()} × ${record.height.toLocaleString()} px`;
   $('preview-size').textContent = `${bytes(record.byteSize)} · 原始 PNG`;
-  $('filename').value = record.title.slice(0, 100);
   updateExportHint();
   for (const id of ['zoom-in', 'zoom-out', 'zoom-fit']) $(id).disabled = false;
   $('export-button').disabled = state.busy;
@@ -152,7 +149,7 @@ async function download() {
     setBusy(true); message('');
     const blob = await encodeExport(state.record, { format: state.format, quality: Number($('quality').value), layout: $('pdf-layout').value, margin: Number($('pdf-margin').value) });
     const url = URL.createObjectURL(blob);
-    const filename = safeFilename($('filename').value, state.format);
+    const filename = safeFilename(state.record.title, state.format);
     if (isExtension) {
       try { const id = await chrome.downloads.download({ url, filename, saveAs: true }); downloadUrls.set(id, url); }
       catch (error) { URL.revokeObjectURL(url); throw error; }
@@ -188,7 +185,7 @@ async function resetSource() {
   initialTabId = null; tabSelectionCleared = true;
   const previous = state.htmlId;
   state.files = []; state.entryPath = null; state.htmlId = null; state.importWarnings = [];
-  for (const id of ['file-input', 'folder-input', 'url-input', 'filename']) $(id).value = '';
+  for (const id of ['file-input', 'folder-input', 'url-input']) $(id).value = '';
   $('html-entry').replaceChildren(); $('entry-wrap').hidden = true;
   $('tab-select').replaceChildren(new Option('请选择一个已打开的网页', ''));
   $('file-title').textContent = '把 HTML 文件拖到这里';
