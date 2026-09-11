@@ -1,13 +1,33 @@
 import { putItem, getItem, pruneCaptures } from './lib/store.js';
 import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, utf8ToBase64, base64ToBlob, captureErrorMessage } from './lib/capture-utils.js';
 import { scrollRegion } from './lib/scroll-region.js';
+import { RELOAD_SESSION_KEY, validReloadSession } from './lib/reload-session.js';
 
 const UI_URL = chrome.runtime.getURL('index.html');
 let currentJob = null;
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+let reopeningSession;
+
+function reopenAfterUpdate() {
+  if (reopeningSession) return reopeningSession;
+  reopeningSession = (async () => {
+    const values = await chrome.storage.local.get(RELOAD_SESSION_KEY);
+    const session = values[RELOAD_SESSION_KEY];
+    if (!validReloadSession(session) || session.opened) return;
+    await chrome.storage.local.set({ [RELOAD_SESSION_KEY]: { ...session, opened: true } });
+    // runtime.reload closes extension pages; the replacement gets a new tab.
+    await chrome.tabs.create({ url: `${UI_URL}?resume=${encodeURIComponent(session.id)}` });
+  })().catch(() => {}).finally(() => { reopeningSession = null; });
+  return reopeningSession;
+}
+chrome.runtime.onInstalled.addListener(reopenAfterUpdate);
+reopenAfterUpdate();
 
 chrome.action.onClicked.addListener(async tab => {
-  await chrome.tabs.create({ url: `${UI_URL}${Number.isInteger(tab.id) ? `?tab=${tab.id}` : ''}` });
+  const values = await chrome.storage.local.get(RELOAD_SESSION_KEY);
+  const session = values[RELOAD_SESSION_KEY];
+  const query = validReloadSession(session) ? `?resume=${encodeURIComponent(session.id)}` : Number.isInteger(tab.id) ? `?tab=${tab.id}` : '';
+  await chrome.tabs.create({ url: `${UI_URL}${query}` });
 });
 
 function authorized(sender) {

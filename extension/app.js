@@ -2,6 +2,7 @@ import { createIcons, ScanLine, PanelsTopLeft, History, ShieldCheck, CircleHelp,
 import { putItem, getItem, deleteItem, listItems } from './lib/store.js';
 import { packHtml, listHtmlEntries } from './lib/import-html.js';
 import { encodeExport, planRasterExport, safeFilename } from './lib/export.js';
+import { RELOAD_SESSION_KEY, validReloadSession } from './lib/reload-session.js';
 
 const $ = id => document.getElementById(id);
 const icons = { ScanLine, PanelsTopLeft, History, ShieldCheck, CircleHelp, ArrowUpRight, BookOpen, Scan, FileCode2, Globe2, FolderUp, RefreshCw, Link, Info, ArrowRight, Minus, Plus, Asterisk, ArrowDownRight, Image, SlidersHorizontal, FileText, ChevronDown, Download, Trash2, Sparkles, X };
@@ -16,6 +17,9 @@ let tabSelectionCleared = false;
 const ephemeralHtml = new Set();
 const downloadUrls = new Map();
 let preferencesReady = false;
+let extensionReloading = false;
+let reloadAttempted = new URLSearchParams(location.search).has('resume');
+const OLD_WIDTH_ERROR = '请选择原始宽度、手机、平板或桌面尺寸。';
 
 function notify(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4000); }
 function message(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); $('message').hidden = !text; }
@@ -123,7 +127,72 @@ async function capture() {
     warnings([...(state.source === 'html' ? state.importWarnings : []), ...(result.warnings || [])]);
     message('预览已生成。选择格式，即可保存到电脑。');
     await updateHistoryCount();
-  } catch (error) { message(error.message, true); } finally { setBusy(false); }
+    if (reloadAttempted) { reloadAttempted = false; history.replaceState(null, '', location.pathname); }
+  } catch (error) {
+    if (error.message === OLD_WIDTH_ERROR && !reloadAttempted) {
+      try { await reloadOldEngine(); } catch (reloadError) { message(`重新加载失败：${reloadError.message}。请在扩展管理页重新加载拾页后重试。`, true); }
+    } else message(error.message === OLD_WIDTH_ERROR ? '拾页后台仍是旧版。请完整解压最新版插件，在扩展管理页重新加载后再试；网页来源已保留。' : error.message, true);
+  } finally { if (!extensionReloading) setBusy(false); }
+}
+async function reloadOldEngine() {
+  // Only the old engine's explicit validation error triggers this path. A busy
+  // worker or another capture failure must never reload other workbenches.
+  reloadAttempted = true;
+  setBusy(true);
+  message('检测到旧版截图后台，正在重新加载拾页并恢复网页来源…');
+  const id = `reload-${crypto.randomUUID()}`;
+  const createdAt = Date.now();
+  const selectedTab = state.source === 'tab' ? await chrome.tabs.get(Number($('tab-select').value)).catch(() => null) : null;
+  const snapshot = {
+    id, kind: 'reload', createdAt, source: state.source, htmlId: state.htmlId,
+    files: state.files.map(file => ({ file, path: file.webkitRelativePath })), entryPath: state.entryPath,
+    entries: [...$('html-entry').options].map(option => ({ text: option.text, value: option.value })),
+    fileTitle: $('file-title').textContent, fileDescription: $('file-description').textContent,
+    importWarnings: state.importWarnings, url: $('url-input').value, tabId: $('tab-select').value, tabUrl: selectedTab?.url,
+    options: { ...captureOptions(), widthMode: $('width').value === 'custom' ? 'custom' : 'preset', customWidth: Number($('custom-width').value) || 1024 },
+    format: state.format, quality: $('quality').value, pdfLayout: $('pdf-layout').value, pdfMargin: $('pdf-margin').value,
+  };
+  await putItem(snapshot);
+  await chrome.storage.local.set({ [RELOAD_SESSION_KEY]: { id, createdAt, opened: false } });
+  extensionReloading = true;
+  try { chrome.runtime.reload(); } catch (error) { extensionReloading = false; throw error; }
+}
+
+async function restoreReloadSession() {
+  if (!isExtension) return false;
+  const values = await chrome.storage.local.get(RELOAD_SESSION_KEY);
+  const pending = values[RELOAD_SESSION_KEY];
+  const requested = new URLSearchParams(location.search).get('resume');
+  if (!validReloadSession(pending) || (requested && pending.id !== requested)) return false;
+  const snapshot = await getItem(pending.id);
+  if (!snapshot || snapshot.kind !== 'reload') { await chrome.storage.local.remove(RELOAD_SESSION_KEY); return false; }
+  reloadAttempted = true;
+  state.htmlId = snapshot.htmlId;
+  if (state.htmlId) ephemeralHtml.add(state.htmlId);
+  state.files = (snapshot.files || []).map(({ file, path }) => { if (path) Object.defineProperty(file, 'webkitRelativePath', { value: path }); return file; });
+  state.entryPath = snapshot.entryPath; state.importWarnings = snapshot.importWarnings || [];
+  $('html-entry').replaceChildren(...(snapshot.entries || []).map(entry => new Option(entry.text, entry.value)));
+  $('html-entry').value = snapshot.entryPath || ''; $('entry-wrap').hidden = $('html-entry').options.length < 2;
+  $('file-title').textContent = snapshot.fileTitle; $('file-description').textContent = snapshot.fileDescription;
+  $('url-input').value = snapshot.url || ''; initialTabId = snapshot.tabId || null; tabSelectionCleared = !snapshot.tabId;
+  $('tab-select').replaceChildren(new Option(snapshot.tabId ? '正在恢复标签页…' : '请选择一个已打开的网页', snapshot.tabId || ''));
+  applyCaptureOptions(snapshot.options);
+  selectFormat(snapshot.format); $('quality').value = snapshot.quality; $('quality-value').textContent = `${snapshot.quality}%`;
+  $('pdf-layout').value = snapshot.pdfLayout; $('pdf-margin').value = snapshot.pdfMargin;
+  selectSource(snapshot.source, false);
+  let sourceAvailable = true;
+  if (snapshot.source === 'tab') {
+    await refreshTabs();
+    const tab = snapshot.tabId ? await chrome.tabs.get(Number(snapshot.tabId)).catch(() => null) : null;
+    sourceAvailable = $('tab-select').value === snapshot.tabId && Boolean(snapshot.tabUrl) && tab?.url === snapshot.tabUrl;
+    if (!sourceAvailable) { initialTabId = null; tabSelectionCleared = true; $('tab-select').value = ''; }
+  }
+  await chrome.storage.local.remove(RELOAD_SESSION_KEY);
+  await deleteItem(snapshot.id);
+  await savePreferences();
+  if (!sourceAvailable) { message('原网页已关闭或地址已改变，请重新选择标签页后生成预览。', true); return true; }
+  await capture();
+  return true;
 }
 async function showRecord(record) {
   state.record = record; state.stale = false; state.zoom = 'fit';
@@ -244,7 +313,7 @@ $('nav-history').addEventListener('click', () => showHistory().catch(error => no
 $('clear-history').addEventListener('click', async () => { const records = await listItems('capture'); for (const record of records) await deleteItem(record.id); resetPreview(); await showHistory(); await updateHistoryCount(); notify('本机预览记录已清空'); });
 for (const id of ['help-button', 'top-help', 'install-help']) $(id).addEventListener('click', showHelp); $('close-help').addEventListener('click', () => $('help-dialog').close()); $('help-dialog').addEventListener('click', event => { if (event.target === $('help-dialog')) { const r = $('help-dialog').getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) $('help-dialog').close(); } });
 document.addEventListener('keydown', event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !$('help-dialog').open && !state.busy) { event.preventDefault(); capture(); } });
-window.addEventListener('pagehide', () => { for (const id of ephemeralHtml) deleteItem(id).catch(() => {}); if (state.capturing) chrome.runtime.sendMessage({ type: 'SL_CANCEL' }).catch(() => {}); });
+window.addEventListener('pagehide', () => { if (extensionReloading) return; for (const id of ephemeralHtml) deleteItem(id).catch(() => {}); if (state.capturing) chrome.runtime.sendMessage({ type: 'SL_CANCEL' }).catch(() => {}); });
 
 async function initialize() {
   if (isExtension) {
@@ -254,6 +323,7 @@ async function initialize() {
     chrome.downloads.onChanged.addListener(delta => { if (!downloadUrls.has(delta.id) || !delta.state || !['complete', 'interrupted'].includes(delta.state.current)) return; URL.revokeObjectURL(downloadUrls.get(delta.id)); downloadUrls.delete(delta.id); if (delta.state.current === 'complete') notify('文件已保存到电脑'); else notify('下载已取消或中断，可以再次导出'); });
   } else $('browser-notice').hidden = false;
   preferencesReady = true;
+  if (await restoreReloadSession()) { await updateHistoryCount(); return; }
   selectSource(new URLSearchParams(location.search).has('tab') ? 'tab' : 'html', false);
   await updateHistoryCount();
 }

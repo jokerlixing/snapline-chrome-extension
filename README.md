@@ -14,7 +14,7 @@
 4. 点击 Chrome 右上角的拼图图标，把 **拾页 Snapline** 固定到工具栏。
 5. 打开想保存的网页，点击拾页图标，进入工作台开始导出。
 
-如果拿到的是 `dist/拾页-Snapline-v1.1.1.zip`，先将压缩包完整解压，再加载解压后包含 `manifest.json` 的文件夹。不要把 ZIP 当作网页打开，也不要选择项目根目录。
+如果拿到的是 `dist/拾页-Snapline-v1.1.2.zip`，先将压缩包完整解压，再加载解压后包含 `manifest.json` 的文件夹。不要把 ZIP 当作网页打开，也不要选择项目根目录。
 
 Git 仓库保存源码、示例、测试和说明；已打包的安装文件在 Releases 中提供。下载仓库源码后，需要按「从源码构建」步骤生成 `dist/snapline`。
 
@@ -60,7 +60,7 @@ npm run build
 构建结果：
 
 - `dist/snapline/`：Chrome 可直接加载的扩展文件夹。
-- `dist/拾页-Snapline-v1.1.1.zip`：可分享的安装压缩包，需要解压后加载。
+- `dist/拾页-Snapline-v1.1.2.zip`：可分享的安装压缩包，需要解压后加载。
 
 开发验证：
 
@@ -70,6 +70,8 @@ npm run test:e2e
 ```
 
 完整验证可运行 `npm run test:all`（单元与导入测试、截图引擎、工作台、自定义宽度与重置、主滚动区域、全格式内容完整性）。新功能专项也可运行 `npm run test:controls`、`npm run test:scroll` 和 `npm run test:full-export`。若电脑中没有测试用 Chromium，先运行 `npx playwright install chromium`，也可以通过 `CHROMIUM_PATH` 指定完整 Chromium 的路径。测试不读取你的日常浏览器用户数据。
+
+`npm run test:upgrade` 验证旧后台仍在运行时覆盖新版文件的升级场景，也包含在完整验证中。它会从 Git 历史提取真实 1.0.0 版本，因此需使用包含完整历史的 Git 克隆；仅下载源码 ZIP 不包含这项测试所需的历史。
 
 `npm run preview` 用于本地查看工作台的视觉效果。真正的网页捕获需要在 Chrome 中加载扩展后使用。
 

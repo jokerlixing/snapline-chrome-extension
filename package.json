@@ -1,6 +1,6 @@
 {
   "name": "snapline-chrome-extension",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,8 @@
     "test:controls": "node tests/ui-controls-e2e.mjs",
     "test:scroll": "node tests/scroll-capture-e2e.mjs",
     "test:full-export": "node tests/full-export-e2e.mjs",
-    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:full-export"
+    "test:upgrade": "node tests/upgrade-e2e.mjs",
+    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:full-export && npm run test:upgrade"
   },
   "dependencies": {
     "jspdf": "^4.2.1",
