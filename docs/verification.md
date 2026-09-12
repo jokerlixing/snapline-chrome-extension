@@ -26,6 +26,8 @@
 
 说明修正：区分两版的保存弹窗、原始宽度、当前可见区域、懒加载和脚本能力；补全文件/像素/PDF 上限、Node 版本和历史记录规则；将完整滚动能力限定为可识别且稳定的正文主区域。未改变捕获功能代码。
 
+补充测试首次在 Linux CI 运行时，历史刷新断言先于 IndexedDB 列表渲染完成，读到了临时空列表；已改为等待列表、计数及空态就绪后再核对具体记录，不延长固定睡眠或跳过断言。该测试同时纳入完整回归和 Pages 部署前检查。
+
 **验证范围**：真实截图在独立桌面 Chromium 中执行，在线页面能力使用本地 HTTP 夹具，包括 Cookie 和虚拟滚动结构；没有把私人登录会话、任意第三方站点、真实手机、Safari 或 Firefox 列为已实测。390/768 px 是布局宽度测试。网页端只处理静态 HTML，跨域媒体、脚本内容、嵌入页面、无限滚动和复杂布局仍受说明中的限制约束。
 
 证据保存在本机 `artifacts/`：`engine-e2e.json`、`scroll-capture-e2e.json`、`full-export-e2e.json`、`ui-test-results.json`、`ui-controls-results.json`、`upgrade-e2e-results.json`、`web-capture-e2e.json`、`web-local-2026-09-12.json`、`web-e2e-results.json`、`documented-options-e2e.json`。该目录不提交 Git；测试源码和本核查记录已纳入仓库，便于重新执行。以下保留此前的发布与独立核验记录。

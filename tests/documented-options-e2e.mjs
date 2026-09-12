@@ -44,6 +44,14 @@ async function download(name) {
   await page.waitForFunction(() => !document.getElementById('export-button').disabled);
   return readFile(file);
 }
+async function historyNames(count) {
+  // History is loaded from IndexedDB after navigation. Wait for both the list
+  // and its count; reading immediately after click can observe the empty DOM.
+  await page.waitForFunction(expected => document.querySelectorAll('.history-item').length === expected
+    && Number(document.getElementById('history-count').textContent) === expected
+    && (expected > 0 || document.querySelector('.history-empty')), count);
+  return page.locator('.history-content h3').allTextContents();
+}
 async function inspectRaster(bytes, type) {
   return page.evaluate(async ({ bytes, type }) => {
     const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type }));
@@ -137,7 +145,9 @@ try {
   }
 
   await page.locator('#nav-history').click();
+  await historyNames(1);
   await page.locator('#clear-history').click();
+  await historyNames(0);
   await page.locator('#nav-workbench').click();
   for (let i = 1; i <= 13; i++) {
     const title = `History ${String(i).padStart(2, '0')}`;
@@ -145,23 +155,22 @@ try {
     assert.equal(Number(await page.locator('#history-count').innerText()), Math.min(i, 12));
   }
   await page.locator('#nav-history').click();
-  const names = await page.locator('.history-content h3').allTextContents();
+  const names = await historyNames(12);
   const expected = Array.from({ length: 12 }, (_, i) => `History ${String(13 - i).padStart(2, '0')}`);
   assert.deepEqual(names, expected);
   await page.reload();
   await page.locator('#nav-history').click();
-  assert.deepEqual(await page.locator('.history-content h3').allTextContents(), expected);
+  assert.deepEqual(await historyNames(12), expected);
   await page.getByRole('button', { name: '删除 History 07', exact: true }).click();
-  await page.waitForFunction(() => document.querySelectorAll('.history-item').length === 11);
-  const afterDelete = await page.locator('.history-content h3').allTextContents();
+  const afterDelete = await historyNames(11);
   assert.deepEqual(afterDelete, expected.filter(name => name !== 'History 07'));
   assert.equal(Number(await page.locator('#history-count').innerText()), 11);
   await page.locator('#clear-history').click();
-  await page.waitForFunction(() => document.querySelectorAll('.history-item').length === 0);
+  await historyNames(0);
   assert.equal(Number(await page.locator('#history-count').innerText()), 0);
   await page.reload();
   await page.locator('#nav-history').click();
-  assert.equal(await page.locator('.history-item').count(), 0);
+  assert.deepEqual(await historyNames(0), []);
   report.history = { generated: 13, retained: names, afterDelete, afterClear: 0, persistedAcrossReload: true };
   pass('13 UI captures retain the newest 12; deletion and clearing persist across reload');
 
