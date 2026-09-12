@@ -1,4 +1,36 @@
-# 独立导出核验
+# 功能验证记录
+
+## 2026-09-12 功能说明复核
+
+核查对象为 v1.2.0，功能源码基线 `ba3b40e`。本次重新安装依赖、构建并实际执行下列检查，同时修正 README、根目录使用说明和详细指南中的不准确表述。浏览器使用独立临时配置；环境为 Windows、Node.js 24.14.0、npm 11.9.0、Chromium 151.0.7922.34。
+
+| 操作或命令 | 本次结果 | 对应说明中的功能 |
+| --- | --- | --- |
+| `npm ci`、`npm run build` | 成功；依赖审计 0 个已知漏洞 | 按说明安装依赖，生成网页版、插件目录和 Windows 安装 ZIP |
+| `npm run preview` | HTML、JS、CSS 均返回 HTTP 200 | 本地 `http://127.0.0.1:4173` 可启动 |
+| `npm test` | 25/25 | 参数和上限、HTML 资源打包、文件名、PDF 分页、WebP 缩放规则 |
+| `npm run test:engine` | 16/16 | 长网页、手机/平板宽度、重载页面、Cookie、透明、可见区域、取消和页面恢复 |
+| `npm run test:scroll` | 8/8 | 主滚动区域、180 行虚拟正文、sticky 标题不重复、2 倍像素、取消与滚动恢复 |
+| `npm run test:full-export` | 25 个格式检查 + 3 个 WebP 边界检查通过 | 5 类长页分别导出 PNG/JPG/WebP/A4 PDF/长页 PDF；逐像素核对首、中、尾并核对 PDF 行覆盖 |
+| `npm run test:e2e` | 16/16 | 插件三类来源、四格式真实下载、历史、设置、帮助与窄屏布局 |
+| `npm run test:controls` | 8/8 | 自定义宽度校验/持久化、来源重置、预览失效和异步状态 |
+| `npm run test:upgrade` | 5/5 | 真实 1.0.0 后台覆盖升级到 1.2.0，自定义宽度继续生成、来源恢复和一次重试限制 |
+| `npm run test:web-engine` | 18/18 | 网页版宽度与倍率、完整静态长图、透明、资源夹、脚本隔离、取消和超限 |
+| `npm run test:web`（本地） | 9/9 | 仓库子路径资源、本地 HTML/代码/文件夹、四格式下载、历史和手机/平板布局 |
+| `npm run test:documented` | 12/12 | 9 种 PDF 布局/页边距组合、13 次预览后保留最新 12 条及删除持久性、JPG/WebP 质量和透明背景 |
+| `SNAPLINE_WEB_URL` 指向公共网站后运行 `npm run test:web` | 9/9 | [实际 GitHub Pages 网站](https://jokerlixing.github.io/snapline-chrome-extension/)上重复生成与下载流程 |
+
+上述检查未发现功能失败，UI 检查无脚本错误。网页版生成的自定义宽度 621 px × 2 截图为 1242 × 4800 px，顶部和底部色块均完整；内部滚动专项验证 180 行虚拟列表逐行保留；超限 WebP 的 16,384 / 20,000 px 样本均等比例缩小并保留底部。
+
+补充验收通过真实 UI 下载 A4、Letter、长页 × 0/10/20 mm 共 9 个 PDF，解压内容流核对页面尺寸、实际图像位置和边距，解码嵌入图片核对首尾与完整像素行；没有只调用生产分页函数来推断结果。连续生成 13 次后仅保留第 13 至第 2 次，单条删除、清空和刷新后持久性正确。同一纹理样本质量从 30 改为 100 时，JPG 为 5,292→39,004 字节、WebP 为 5,094→16,266 字节；JPG 透明处为白底，WebP 透明处保留。
+
+说明修正：区分两版的保存弹窗、原始宽度、当前可见区域、懒加载和脚本能力；补全文件/像素/PDF 上限、Node 版本和历史记录规则；将完整滚动能力限定为可识别且稳定的正文主区域。未改变捕获功能代码。
+
+**验证范围**：真实截图在独立桌面 Chromium 中执行，在线页面能力使用本地 HTTP 夹具，包括 Cookie 和虚拟滚动结构；没有把私人登录会话、任意第三方站点、真实手机、Safari 或 Firefox 列为已实测。390/768 px 是布局宽度测试。网页端只处理静态 HTML，跨域媒体、脚本内容、嵌入页面、无限滚动和复杂布局仍受说明中的限制约束。
+
+证据保存在本机 `artifacts/`：`engine-e2e.json`、`scroll-capture-e2e.json`、`full-export-e2e.json`、`ui-test-results.json`、`ui-controls-results.json`、`upgrade-e2e-results.json`、`web-capture-e2e.json`、`web-local-2026-09-12.json`、`web-e2e-results.json`、`documented-options-e2e.json`。该目录不提交 Git；测试源码和本核查记录已纳入仓库，便于重新执行。以下保留此前的发布与独立核验记录。
+
+## 2026-09-11 独立导出核验
 
 核验时间：2026-09-11，Asia/Shanghai。
 

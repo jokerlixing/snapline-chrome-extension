@@ -19,7 +19,8 @@
     "test:upgrade": "node tests/upgrade-e2e.mjs",
     "test:web": "node tests/web-e2e.mjs",
     "test:web-engine": "node tests/web-capture-e2e.mjs",
-    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:full-export && npm run test:upgrade && npm run test:web-engine && npm run test:web"
+    "test:documented": "node tests/documented-options-e2e.mjs",
+    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:full-export && npm run test:upgrade && npm run test:web-engine && npm run test:web && npm run test:documented"
   },
   "dependencies": {
     "html2canvas": "1.4.1",
