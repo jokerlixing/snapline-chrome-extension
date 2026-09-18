@@ -1,5 +1,5 @@
 import { putItem, getItem, pruneCaptures } from './lib/store.js';
-import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, utf8ToBase64, base64ToBlob, captureErrorMessage } from './lib/capture-utils.js';
+import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, utf8ToBase64, base64ToBlob, captureErrorMessage, planSurfaceTiles, SURFACE_LIMIT, MIN_TILE_DIMENSION } from './lib/capture-utils.js';
 import { scrollRegion } from './lib/scroll-region.js';
 import { RELOAD_SESSION_KEY, validReloadSession } from './lib/reload-session.js';
 
@@ -7,6 +7,8 @@ const UI_URL = chrome.runtime.getURL('index.html');
 let currentJob = null;
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 let reopeningSession;
+const SURFACE_ATTEMPTS = 5;
+const MAX_SURFACE_TILES = 512;
 
 function reopenAfterUpdate() {
   if (reopeningSession) return reopeningSession;
@@ -189,6 +191,75 @@ async function loadLazyContent(job, contextId, restorePosition) {
   }, [restorePosition.x, restorePosition.y], contextId);
 }
 
+// Chromium refuses `Page.captureScreenshot` with -32000 "Unable to capture
+// screenshot" as soon as one compositor surface exceeds the GPU texture limit
+// (16384 device pixels on Chrome 153, see SURFACE_LIMIT). Long pages and high
+// clarity factors both cross it, so a single request cannot cover them.
+function surfaceRefused(error) {
+  return /Unable to capture screenshot|-32000/i.test(error?.message || '');
+}
+
+function screenshotRequest(clip, captureBeyondViewport) {
+  return { format: 'png', fromSurface: true, captureBeyondViewport, clip: { x: clip.x, y: clip.y, width: clip.width, height: clip.height, scale: 1 }, optimizeForSpeed: false };
+}
+
+// Capture one region of the page. A region that fits in a single surface keeps
+// the original single request; a larger one is split into a tile grid and
+// stitched, and a refused request halves the surface budget and retries, so a GPU
+// with a lower texture limit than the measured one degrades to smaller tiles
+// instead of failing.
+async function captureSurface(job, clip, scale, contextId, captureBeyondViewport = true, onProgress) {
+  let limit = SURFACE_LIMIT;
+  let lastError;
+  for (let attempt = 0; attempt < SURFACE_ATTEMPTS; attempt++) {
+    const plan = planSurfaceTiles(clip, scale, limit);
+    if (plan.tiles.length > MAX_SURFACE_TILES) throw new Error('这张截图的尺寸超出浏览器可处理的范围，请降低清晰度或改为「当前可见区域」后重试。');
+    let canvas;
+    try {
+      if (plan.tiles.length === 1) {
+        const shot = await command(job, 'Page.captureScreenshot', screenshotRequest(plan.tiles[0], captureBeyondViewport), 60000);
+        if (!shot.data) throw new Error('没有收到截图数据，请重新生成。');
+        return { data: shot.data };
+      }
+      // The stitched canvas matches the requested region exactly; the final tile
+      // may extend past it and is clipped by drawImage.
+      canvas = new OffscreenCanvas(Math.ceil(clip.width) * scale, Math.ceil(clip.height) * scale);
+      const drawing = canvas.getContext('2d');
+      if (!drawing) throw new Error('无法分配长网页画布，请降低清晰度后重试。');
+      const deadline = Date.now() + 180000;
+      for (let index = 0; index < plan.tiles.length; index++) {
+        checkJob(job);
+        if (Date.now() > deadline) throw new Error('分段截图耗时过长，请等待网页加载稳定或降低清晰度后重试。');
+        const tile = plan.tiles[index];
+        const shot = await command(job, 'Page.captureScreenshot', screenshotRequest(tile, true), 60000);
+        if (!shot.data) throw new Error('没有收到截图数据，请重新生成。');
+        const bitmap = await createImageBitmap(base64ToBlob(shot.data));
+        try {
+          // Tiles are captured from document coordinates, so they land on the
+          // canvas at their own offset and no page scrolling is needed.
+          drawing.drawImage(bitmap, Math.round((tile.x - plan.origin.x) * scale), Math.round((tile.y - plan.origin.y) * scale));
+        } finally { bitmap.close(); }
+        onProgress?.(Math.round(((index + 1) / plan.tiles.length) * 100));
+      }
+      return { canvas };
+    } catch (error) {
+      if (canvas) { canvas.width = 0; canvas.height = 0; }
+      lastError = error;
+      const reduced = Math.floor(limit / 2);
+      if (!surfaceRefused(error) || reduced < MIN_TILE_DIMENSION) throw error;
+      limit = Math.max(MIN_TILE_DIMENSION, reduced);
+    }
+  }
+  throw lastError;
+}
+
+async function captureSurfaceBlob(job, clip, scale, contextId, captureBeyondViewport, onProgress) {
+  const surface = await captureSurface(job, clip, scale, contextId, captureBeyondViewport, onProgress);
+  if (surface.data) return base64ToBlob(surface.data);
+  try { return await surface.canvas.convertToBlob({ type: 'image/png' }); }
+  finally { surface.canvas.width = 0; surface.canvas.height = 0; }
+}
+
 async function captureScrollRegion(job, contextId, options, warnings) {
   let region = await evaluate(job, scrollRegion, ['prepare'], contextId);
   if (!region) return null;
@@ -224,9 +295,10 @@ async function captureScrollRegion(job, contextId, options, warnings) {
       region = await evaluate(job, scrollRegion, ['scroll', { top: covered / options.scale, assets: options.lazyLoad, wait: Math.max(180, Math.min(options.delay, 1000)) }], contextId);
       if (Math.abs(region.totalHeight - totalHeight) > 2) throw new Error('滚动区域的内容仍在变化，请等待网页加载完成后重新生成预览。');
       await progress('正在拼接完整滚动区域', 65 + Math.round(covered / geometry.height * 22));
-      const shot = await command(job, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false, clip: { x: region.x, y: region.y, width: region.width, height: region.height, scale: 1 } }, 45000);
-      if (!shot.data) throw new Error('没有收到滚动区域截图，请重新生成。');
-      const bitmap = await createImageBitmap(base64ToBlob(shot.data));
+      // A wide region at high clarity can still overflow one surface, so this
+      // goes through the same tiling path as the full-page capture.
+      const tile = await captureSurface(job, { x: region.x, y: region.y, width: region.width, height: region.height }, options.scale, contextId, false);
+      const bitmap = tile.canvas || await createImageBitmap(base64ToBlob(tile.data));
       try {
         // The last scroll is clamped by the browser. Skip its already-captured
         // overlap so every output row is covered once, including the page end.
@@ -235,7 +307,10 @@ async function captureScrollRegion(job, contextId, options, warnings) {
         if (offset < 0 || rows <= 0) throw new Error('无法继续滚动到网页末尾，请检查页面滚动区域后重试。');
         drawing.drawImage(bitmap, 0, offset, bitmap.width, rows, 0, covered, geometry.width, rows);
         covered += rows;
-      } finally { bitmap.close(); }
+      } finally {
+        if (tile.canvas) { tile.canvas.width = 0; tile.canvas.height = 0; }
+        else bitmap.close();
+      }
     }
     const blob = await canvas.convertToBlob({ type: 'image/png' });
     warnings.push('已完整截取网页的主滚动区域。');
@@ -352,9 +427,10 @@ async function capture(source, rawOptions, job) {
           const metrics = await command(job, 'Page.getLayoutMetrics');
           geometry = calculateCaptureGeometry(metrics, options);
           await progress('正在生成高清截图', 72);
-          const screenshot = await command(job, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: options.scope === 'full', clip: geometry.clip, optimizeForSpeed: false }, 45000);
-          if (!screenshot.data) throw new Error('没有收到截图数据，请重新生成。');
-          blob = base64ToBlob(screenshot.data);
+          // The callback only fires when the capture really splits into tiles,
+          // including when a refused request had to fall back to smaller ones.
+          blob = await captureSurfaceBlob(job, geometry.clip, options.scale, contextId, options.scope === 'full',
+            percent => progress('正在分段拼接完整截图', 72 + Math.round(percent * 0.14)));
         }
         checkJob(job);
         // Verify that the document used to prepare the screenshot still exists,

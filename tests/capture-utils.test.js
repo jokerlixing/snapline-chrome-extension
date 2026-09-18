@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, utf8ToBase64, base64ToBlob, captureErrorMessage } from '../extension/lib/capture-utils.js';
+import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, utf8ToBase64, base64ToBlob, captureErrorMessage, planSurfaceTiles, SURFACE_LIMIT, MIN_TILE_DIMENSION } from '../extension/lib/capture-utils.js';
 
 const metrics = { cssContentSize: { width: 1440, height: 3000 }, cssVisualViewport: { pageX: 5, pageY: 900, clientWidth: 1440, clientHeight: 900 } };
 
@@ -48,4 +48,65 @@ test('browser errors become actionable messages', () => {
   assert.match(captureErrorMessage(new Error('Another debugger is already attached')), /开发者工具/);
   assert.match(captureErrorMessage(new DOMException('space', 'QuotaExceededError')), /存储空间/);
   assert.match(captureErrorMessage(new Error('Cannot access a file URL')), /允许访问文件网址/);
+});
+
+test('a refused compositor surface is explained instead of leaking the raw protocol error', () => {
+  const raw = new Error('{"code":-32000,"message":"Unable to capture screenshot"}');
+  const message = captureErrorMessage(raw);
+  assert.match(message, /超出显卡可处理的最大尺寸/);
+  assert.doesNotMatch(message, /-32000|Unable to capture/);
+  assert.match(message, /降低清晰度|当前可见区域/);
+});
+
+test('a region inside one surface stays a single screenshot request', () => {
+  assert.equal(SURFACE_LIMIT, 16384);
+  const plan = planSurfaceTiles({ x: 0, y: 0, width: 1440, height: 12000 }, 1);
+  assert.equal(plan.tiles.length, 1);
+  assert.deepEqual(plan.tiles[0], { x: 0, y: 0, width: 1440, height: 12000 });
+});
+
+test('a region past the surface limit is split into full-coverage tiles on both axes', () => {
+  const tall = planSurfaceTiles({ x: 0, y: 0, width: 1440, height: 20000 }, 1);
+  assert.equal(tall.rows, 2);
+  assert.equal(tall.columns, 1);
+  assert.deepEqual(tall.tiles, [{ x: 0, y: 0, width: 1440, height: 10000 }, { x: 0, y: 10000, width: 1440, height: 10000 }]);
+
+  // 6000 CSS px at 3x is 18000 device px wide, so only the width needs tiling.
+  const wide = planSurfaceTiles({ x: 0, y: 0, width: 6000, height: 1200 }, 3);
+  assert.equal(wide.columns, 2);
+  assert.equal(wide.rows, 1);
+  assert.equal(wide.tiles[1].x, 3000);
+  assert.ok(wide.tiles[0].width * 3 <= SURFACE_LIMIT && wide.tiles[1].width * 3 <= SURFACE_LIMIT);
+});
+
+test('tiles cover the clipped region exactly, including fractional origins and odd sizes', () => {
+  for (const [clip, scale] of [
+    [{ x: 0, y: 0, width: 1440, height: 20001 }, 1],
+    [{ x: 0, y: 0, width: 7680, height: 32760 }, 3],
+    [{ x: 12.5, y: 40.25, width: 390, height: 19000 }, 2],
+    [{ x: 0, y: 0, width: 200, height: 16385 }, 1],
+  ]) {
+    const plan = planSurfaceTiles(clip, scale);
+    const right = plan.tiles.reduce((most, tile) => Math.max(most, tile.x + tile.width), 0);
+    const bottom = plan.tiles.reduce((most, tile) => Math.max(most, tile.y + tile.height), 0);
+    assert.equal(right, plan.origin.x + Math.ceil(clip.width), `horizontal coverage for ${JSON.stringify(clip)} at ${scale}x`);
+    assert.equal(bottom, plan.origin.y + Math.ceil(clip.height), `vertical coverage for ${JSON.stringify(clip)} at ${scale}x`);
+    assert.equal(plan.tiles[0].x, plan.origin.x);
+    assert.equal(plan.tiles[0].y, plan.origin.y);
+    for (const tile of plan.tiles) {
+      assert.ok(tile.width * scale <= SURFACE_LIMIT && tile.height * scale <= SURFACE_LIMIT, `tile ${JSON.stringify(tile)} fits the surface at ${scale}x`);
+    }
+    // Every row and column of the region is claimed by exactly one tile.
+    const rows = new Set(plan.tiles.map(tile => tile.y - plan.origin.y));
+    const columns = new Set(plan.tiles.map(tile => tile.x - plan.origin.x));
+    assert.equal(rows.size * columns.size, plan.tiles.length);
+  }
+});
+
+test('smaller surface budgets still tile instead of throwing away content', () => {
+  const plan = planSurfaceTiles({ x: 0, y: 0, width: 1440, height: 20000 }, 1, 4096);
+  assert.ok(plan.rows >= 5);
+  assert.equal(plan.tiles.reduce((most, tile) => Math.max(most, tile.y + tile.height), 0), 20000);
+  assert.ok(plan.tiles.every(tile => tile.height <= 4096));
+  assert.ok(MIN_TILE_DIMENSION <= 4096);
 });

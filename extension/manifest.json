@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "拾页 Snapline · 网页转图片与 PDF",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "把本地 HTML、当前标签页和在线网页，保存为高清 PNG、JPG、WebP 或 PDF。简洁中文工作台，本机处理。",
   "minimum_chrome_version": "120",
   "permissions": ["debugger", "storage", "downloads", "tabs"],

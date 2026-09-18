@@ -1,6 +1,6 @@
 {
   "name": "snapline-chrome-extension",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -15,12 +15,13 @@
     "test:engine": "node tests/engine-e2e.mjs",
     "test:controls": "node tests/ui-controls-e2e.mjs",
     "test:scroll": "node tests/scroll-capture-e2e.mjs",
+    "test:tall": "node tests/tall-surface-e2e.mjs",
     "test:full-export": "node tests/full-export-e2e.mjs",
     "test:upgrade": "node tests/upgrade-e2e.mjs",
     "test:web": "node tests/web-e2e.mjs",
     "test:web-engine": "node tests/web-capture-e2e.mjs",
     "test:documented": "node tests/documented-options-e2e.mjs",
-    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:full-export && npm run test:upgrade && npm run test:web-engine && npm run test:web && npm run test:documented"
+    "test:all": "npm test && npm run build && npm run test:engine && npm run test:e2e && npm run test:controls && npm run test:scroll && npm run test:tall && npm run test:full-export && npm run test:upgrade && npm run test:web-engine && npm run test:web && npm run test:documented"
   },
   "dependencies": {
     "html2canvas": "1.4.1",

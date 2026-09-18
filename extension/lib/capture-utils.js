@@ -7,6 +7,34 @@ export const CAPTURE_LIMITS = Object.freeze({
   maxWidth: 7680,
 });
 
+// Chromium renders a screenshot into one compositor surface, and refuses with
+// `{"code":-32000,"message":"Unable to capture screenshot"}` once either side of
+// that surface exceeds the GPU texture limit. Measured on Chrome 153: 16384
+// device pixels succeed, 16385 fail, and both axes count. The extension output
+// limits above are far larger, so a single request can never satisfy a long page.
+export const SURFACE_LIMIT = 16384;
+export const MIN_TILE_DIMENSION = 1024;
+
+export function planSurfaceTiles(clip, scale, limit = SURFACE_LIMIT) {
+  const width = Math.ceil(clip.width);
+  const height = Math.ceil(clip.height);
+  const origin = { x: Math.floor(clip.x), y: Math.floor(clip.y) };
+  const maxCss = Math.max(1, Math.floor(limit / Math.max(1, scale)));
+  const columns = Math.max(1, Math.ceil(width / maxCss));
+  const rows = Math.max(1, Math.ceil(height / maxCss));
+  const tileWidth = Math.ceil(width / columns);
+  const tileHeight = Math.ceil(height / rows);
+  const tiles = [];
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const x = origin.x + column * tileWidth;
+      const y = origin.y + row * tileHeight;
+      tiles.push({ x, y, width: Math.min(tileWidth, origin.x + width - x), height: Math.min(tileHeight, origin.y + height - y) });
+    }
+  }
+  return { columns, rows, tileWidth, tileHeight, origin, tiles };
+}
+
 export function normalizeCaptureOptions(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('截图设置无效，请重新选择。');
   const width = input.width ?? 0;
@@ -86,6 +114,7 @@ export function base64ToBlob(base64, mimeType = 'image/png') {
 export function captureErrorMessage(error) {
   const message = error?.message || String(error);
   if (/QuotaExceeded/i.test(error?.name || '') || /quota/i.test(message)) return '本地存储空间不足，请删除几条历史记录后重试。';
+  if (/Unable to capture screenshot|capture screenshot/i.test(message)) return '浏览器无法合成这张截图：图片超出显卡可处理的最大尺寸。请降低清晰度、减小自定义宽度，或改为「当前可见区域」后重试。';
   if (/another debugger|already attached|DevTools/i.test(message)) return '这个页面已打开开发者工具或被其他截图工具占用，请关闭它们后重试。';
   if (/file.*access|file.*permission|Cannot access a file/i.test(message)) return '请在 Chrome 扩展详情中开启「允许访问文件网址」，或直接导入本地 HTML。';
   if (/restricted by policy|policy.*restrict/i.test(message)) return '当前浏览器的管理策略禁止截图，请联系设备管理员。';

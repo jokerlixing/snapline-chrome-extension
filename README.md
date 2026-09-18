@@ -27,6 +27,7 @@
 - **完整网页**：插件可保存普通长页，或聚焦一个正文主滚动区域，逐段拼接后恢复原来的滚动位置。多个独立面板、小型代码框、跨域嵌入页面和任意虚拟列表不保证完整；无限滚动和持续变化的内容不会无限采集。先展开内容、等待页面稳定，再生成预览。
 - **网页版**：不执行导入脚本，略过 iframe、object 等嵌入内容；静态主滚动区域会尝试展开。开启懒加载选项只会尝试加载 HTML 中的原生懒加载图片，不会运行滚动加载脚本。
 - **宽度与大小**：自定义宽度为 200–7680 的整数像素；输出单边最多 32,760 像素、总像素最多 6,400 万，1–3 倍清晰度均计入该限制。输入宽度决定排版宽度，固定宽布局可能溢出，主滚动区域截图也可能比输入值窄。
+- **超长网页**：浏览器一次只能合成有限大小的画面（约 16,384 设备像素），超过就先分段截取再拼接；因此长网页和高清晰度组合也能完整导出，不需要额外设置。分段会略微增加生成时间。
 - **HTML 导入**：单次选中文件总大小最多 25 MB，打包后的 HTML 和资源最多 60 MB；模块导入、接口和服务端路由请通过本地服务器打开，再用插件捕获。
 - **导出**：PDF 是截图型文档，文字不可选中或搜索，分页可能切开段落。超长 WebP 等比例缩小至单边最多 16,383 像素；单张长页 PDF 超限时请改用分页。
 - **浏览器范围**：已在桌面 Chromium 实测，390/768 px 是响应式布局检查，不代表真实手机、Safari 或 Firefox 已完成验证；插件的声明最低版本为 Chrome 120。
@@ -41,7 +42,7 @@
 
 ## 插件版
 
-1. 从 [Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest) 下载 `Snapline-v1.2.0.zip` 并完整解压。
+1. 从 [Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest) 下载 `Snapline-v1.2.1.zip` 并完整解压。
 2. 在 Chrome 打开 `chrome://extensions`，开启「开发者模式」。
 3. 点击「加载已解压的扩展程序」，选择解压后的 `snapline` 文件夹，里面应直接包含 `manifest.json`。
 4. 打开要保存的网页，完成登录或展开内容，点击拾页工具栏图标。
@@ -63,7 +64,7 @@ npm run preview
 
 - `dist/site/`：可部署的静态网页版；本地地址为 `http://127.0.0.1:4173`。
 - `dist/snapline/`：Chrome 可加载的插件目录。
-- Windows 构建另生成 `dist/拾页-Snapline-v1.2.0.zip` 安装包。
+- Windows 构建另生成 `dist/拾页-Snapline-v1.2.1.zip` 安装包。
 - 只构建网页版：`npm run build:web`；只构建插件：`npm run build:extension`。
 
 请通过 HTTP 服务打开本地网页版，直接双击 `index.html` 会受到模块与资源加载限制。
@@ -77,13 +78,14 @@ npm run build
 npm run test:web-engine
 npm run test:web
 npm run test:e2e
+npm run test:tall
 ```
 
 完整回归使用 `npm run test:all`。其中 `test:upgrade` 需要完整 Git 历史，会提取真实 1.0.0 进行覆盖升级测试；仅下载源码 ZIP 不含该历史。浏览器测试使用独立配置，不读取日常浏览器数据；Linux 安装测试浏览器时可用 `npx playwright install --with-deps chromium`。
 
-**最近核查：2026-09-12，v1.2.0。** 截图、内部滚动、四格式导出、HTML 导入、自定义宽度、重置、历史和升级回归均通过；公共网站的 9 组真实操作检查通过。补充的 `npm run test:documented` 通过 12 组检查，覆盖 9 种 PDF 布局/页边距组合、13 次生成后的历史保留，以及 JPG/WebP 质量与透明背景。
+**最近核查：2026-09-18，v1.2.1。** 30 项单元测试、16 组长网页与重载检查、16 项插件工作台、8 组控件、8 组内部滚动、5 组长页分段、25 个格式检查、5 项升级、18 组网页版捕获、9 组网页操作、12 组文档化选项全部通过。旧版对超过约 16,384 设备像素的网页返回 `-32000 Unable to capture screenshot`，现已改为分段截取后拼接，并在请求被拒时自动减半重试；用真实 Chrome 153 复测 30,000 px 长页、2×、3× 组合以及一次真实拒绝恢复，逐行核对色带无错位。
 
-功能核查记录及每项对应的测试命令见 [最新功能验收](docs/verification.md#2026-09-12-功能说明复核)。线上复测可将环境变量 `SNAPLINE_WEB_URL` 设为公共网站地址后运行 `npm run test:web`。测试中使用可复现的本地页面和独立浏览器配置，不代表任意第三方网站或私人登录会话均已实测。
+功能核查记录及每项对应的测试命令见 [最新功能验收](docs/verification.md#2026-09-18-长页分段截图修复)。线上复测可将环境变量 `SNAPLINE_WEB_URL` 设为公共网站地址后运行 `npm run test:web`。测试中使用可复现的本地页面和独立浏览器配置，不代表任意第三方网站或私人登录会话均已实测。
 
 推送 `main` 后，`.github/workflows/pages.yml` 自动检查、构建并发布 `dist/site` 到 GitHub Pages。工作流使用只读源码权限，部署任务仅请求 Pages 和 OIDC 所需权限，无需额外密钥。站点不包含构建依赖、测试产物或本机记录。
 
