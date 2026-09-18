@@ -51,3 +51,52 @@ test('the deployed site and the extension package stay separate', async t => {
   assert.ok(extension.includes('manifest.json'), 'dist/snapline 必须是可加载的扩展目录');
   assert.ok((await stat(resolve(root, 'dist/site/app.js'))).size > 100000, '站点需要自带已打包的应用');
 });
+
+// The Windows build used to pack the extension with PowerShell's Compress-Archive,
+// which writes entry names as `snapline\app.js`. Windows extractors tolerate that,
+// so the breakage was invisible locally: macOS/Linux unzip produced a flat pile of
+// files literally named `snapline\app.js` and an extension Chrome could not load.
+test('the extension archive uses forward slashes and UTF-8 names', async t => {
+  const archive = resolve(root, `dist/Snapline-v${manifest.version}.zip`);
+  if (!exists(archive)) return t.skip('尚未构建安装包，跳过归档检查');
+
+  // Read the central directory directly: zipfile-style readers silently rewrite
+  // `\` to `/` on Windows, which would hide exactly the defect under test.
+  const blob = await readFile(archive);
+  const signature = Buffer.from('PK\x01\x02', 'latin1');
+  const names = [];
+  for (let cursor = blob.indexOf(signature); cursor >= 0; cursor = blob.indexOf(signature, cursor + 4)) {
+    const length = blob.readUInt16LE(cursor + 28);
+    names.push(blob.subarray(cursor + 46, cursor + 46 + length).toString('utf8'));
+  }
+
+  assert.ok(names.length > 0, '安装包必须含有文件');
+  const backslashed = names.filter(name => name.includes('\\'));
+  assert.deepEqual(backslashed, [], `ZIP 条目名必须用正斜杠（APPNOTE 4.4.17.1），违规项：${backslashed.slice(0, 3).join('、')}`);
+  assert.ok(names.every(name => name === 'snapline' || name.startsWith('snapline/')), '插件文件必须位于 snapline/ 目录下');
+  assert.ok(names.includes('snapline/manifest.json'), '安装包必须包含 snapline/manifest.json');
+
+  const chinese = names.filter(name => /[^\x00-\x7f]/.test(name));
+  assert.ok(chinese.length > 0, '安装包应包含中文文档，否则无法覆盖中文名编码');
+  for (const name of chinese) {
+    assert.ok(/[\u4e00-\u9fff]/.test(name), `中文条目名不应出现乱码：${name}`);
+  }
+});
+
+// v1.2.1 and v1.2.2 shipped with a tag but no GitHub Release, so `releases/latest`
+// still pointed at v1.2.0 while README told users to download `Snapline-v1.2.2.zip`
+// from that very page — a file that did not exist there. The version a reader is
+// sent to download must be the version this repository is currently at.
+test('README points at the archive this version actually ships', async () => {
+  const readme = await read('README.md');
+  const expected = `Snapline-v${manifest.version}.zip`;
+  assert.ok(
+    readme.includes(expected),
+    `README 必须指引用户下载 ${expected}（当前版本），否则下载链接会指向不存在的文件`,
+  );
+  const changelog = await read('CHANGELOG.md');
+  assert.ok(
+    changelog.includes(`## ${manifest.version} `),
+    `CHANGELOG 必须有 ${manifest.version} 的条目`,
+  );
+});
