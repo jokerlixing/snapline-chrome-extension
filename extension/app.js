@@ -231,8 +231,30 @@ async function showRecord(record) {
   $('export-button').disabled = state.busy;
   updateZoom();
 }
-function updateZoom() { if (!state.record) return; const width = state.zoom === 'fit' ? Math.min(state.record.width, $('preview-stage').clientWidth - 48) : Math.round(state.record.width * state.zoom); $('preview-image').style.width = `${width}px`; $('zoom-fit').textContent = state.zoom === 'fit' ? '适应' : `${Math.round(state.zoom * 100)}%`; }
-function changeZoom(delta) { if (!state.record) return; const current = state.zoom === 'fit' ? Math.min(1, ($('preview-stage').clientWidth - 48) / state.record.width) : state.zoom; state.zoom = Math.max(.1, Math.min(3, current + delta)); updateZoom(); }
+function stageContentWidth() {
+  // clientWidth already excludes the scrollbar; subtract the real padding because
+  // the narrow breakpoints use 16px instead of 24px. Reading it back keeps the
+  // preview flush with the stage instead of relying on a hardcoded inset.
+  const stage = $('preview-stage');
+  const style = getComputedStyle(stage);
+  const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  return stage.clientWidth - (Number.isFinite(padding) ? padding : 0);
+}
+function updateZoom() {
+  const label = state.zoom === 'fit' ? '适应' : `${Math.round(state.zoom * 100)}%`;
+  if ($('zoom-fit').textContent !== label) $('zoom-fit').textContent = label;
+  if (!state.record) return;
+  let width;
+  if (state.zoom === 'fit') {
+    const available = stageContentWidth();
+    // The stage reports 0 while the workbench is hidden; keep the last width.
+    if (available <= 0) return;
+    width = Math.max(1, Math.min(state.record.width, Math.floor(available)));
+  } else width = Math.round(state.record.width * state.zoom);
+  const applied = `${width}px`;
+  if ($('preview-image').style.width !== applied) $('preview-image').style.width = applied;
+}
+function changeZoom(delta) { if (!state.record) return; const available = stageContentWidth(); const current = state.zoom === 'fit' ? Math.min(1, (available > 0 ? available : state.record.width) / state.record.width) : state.zoom; state.zoom = Math.max(.1, Math.min(3, current + delta)); updateZoom(); }
 async function download() {
   if (state.busy || !state.record || state.stale) return;
   try {

@@ -111,6 +111,26 @@ try {
   assert.ok(await page.locator('#web-url-guide a[href*="github.com"]').count());
   pass('在线网页清晰引导插件，不提供无法执行的跨站截图入口');
 
+  const gutter = await page.evaluate(() => getComputedStyle(document.documentElement).scrollbarGutter);
+  assert.equal(gutter, 'stable', '根元素必须预留滚动条槽位，否则通知出现时会推动整页重排');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('preview-stage')).scrollbarGutter), 'stable');
+  const measureLayout = () => page.evaluate(() => ({
+    page: document.documentElement.clientWidth,
+    grid: Math.round(document.querySelector('.workspace-grid').getBoundingClientRect().width),
+    stage: document.getElementById('preview-stage').clientWidth,
+    image: Math.round(document.getElementById('preview-image').getBoundingClientRect().width),
+  }));
+  const settled = await measureLayout();
+  await page.evaluate(() => {
+    const notice = document.getElementById('message'); notice.textContent = '已创建 拾页示例.png（1.2 MB），请在浏览器下载记录中查看。'; notice.hidden = false;
+    document.getElementById('warning-box').hidden = false;
+    document.getElementById('browser-notice').hidden = false;
+  });
+  await page.waitForTimeout(200);
+  assert.deepEqual(await measureLayout(), settled, '通知出现后页面宽度和预览图尺寸都不应变化');
+  await page.evaluate(() => { document.getElementById('message').hidden = true; document.getElementById('warning-box').hidden = true; });
+  pass('通知出现不改变页面宽度与预览图尺寸，滚动条槽位已预留');
+
   await page.reload();
   await page.waitForFunction(() => document.getElementById('width').value === '390');
   assert.ok(Number(await page.locator('#history-count').innerText()) >= 4);
