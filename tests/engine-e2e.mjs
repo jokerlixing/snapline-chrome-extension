@@ -19,6 +19,14 @@ const fixture = `<!doctype html><html><head><meta charset="utf-8"><title>Engine 
 html,body{margin:0;padding:0;font:24px Arial,sans-serif}main{height:2400px;background:linear-gradient(#e8eef4,#dce7df)}
 header{height:200px;box-sizing:border-box;padding:30px;background:#113355;color:white}.middle{padding:40px}.bottom{position:absolute;top:2250px;height:150px;width:100%;background:rgb(80,180,130)}
 </style></head><body><main><header>Snapline · 中文高清截图</header><div class="middle">真实 Chrome 截图验证</div><div class="bottom">BOTTOM</div></main></body></html>`;
+const colorFixture = `<!doctype html><html><head><meta charset="utf-8"><title>Color fidelity fixture</title><style>
+*{box-sizing:border-box}html,body{margin:0;width:800px;min-height:1200px;background:#f3efe4}
+.band{width:800px;height:200px}.solid{background:rgb(243,239,228)}.alpha{background:rgba(255,255,255,.35)}
+.gradient{background:linear-gradient(90deg,#f7f4ed 0%,#f3efe4 100%)}
+.shadow{background:#f7f4ed;box-shadow:inset 0 0 160px rgba(23,43,37,.16)}
+.p3{background:color(display-p3 .92 .72 .36)}.oklch{background:oklch(80% .12 210)}
+</style></head><body><div class="band solid"></div><div class="band alpha"></div><div class="band gradient"></div><div class="band shadow"></div><div class="band p3"></div><div class="band oklch"></div></body></html>`;
+const colorPoints = [[0,0],[100,100],[100,300],[100,500],[400,500],[700,500],[100,700],[400,700],[100,900],[100,1100],[799,1199]];
 
 try {
   await fs.mkdir(staged, { recursive: true });
@@ -32,7 +40,8 @@ try {
   await fs.writeFile(path.join(staged, 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><title>Snapline engine tests</title></head><body>Engine tests</body></html>');
   server = http.createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
-    if (request.url === '/transparent') response.end('<!doctype html><title>Transparent</title><style>html,body{margin:0;height:600px}div{width:200px;height:100px;background:#db2777}</style><div></div>');
+    if (request.url === '/colors') response.end(colorFixture);
+    else if (request.url === '/transparent') response.end('<!doctype html><title>Transparent</title><style>html,body{margin:0;height:600px}div{width:200px;height:100px;background:#db2777}</style><div></div>');
     else if (request.url === '/huge') response.end('<!doctype html><title>Huge</title><style>html,body{margin:0}div{height:40000px;background:#abc}</style><div></div>');
     else if (request.url === '/missing.png') { response.statusCode = 404; response.end('missing'); }
     else if (request.url === '/broken') response.end('<!doctype html><title>Broken image</title><img src="/missing.png"><div style="height:300px">Visible content</div>');
@@ -99,6 +108,23 @@ try {
     bitmap.close();
     return { dimensions, pixel, type: record.blob.type, byteSize: bytes.length, options: record.options };
   }, { id, sampleX, sampleY });
+  const inspectPixels = (id, points) => ui.evaluate(async ({ id, points }) => {
+    const { getItem } = await import('./lib/store.js');
+    const record = await getItem(id);
+    const bitmap = await createImageBitmap(record.blob, { colorSpaceConversion: 'default' });
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const drawing = canvas.getContext('2d', { colorSpace: 'srgb' }); drawing.drawImage(bitmap, 0, 0);
+    const colors = points.map(([x, y]) => [...drawing.getImageData(x, y, 1, 1).data]);
+    const result = { size: [bitmap.width, bitmap.height], colors }; bitmap.close(); return result;
+  }, { id, points });
+  const inspectPng = (base64, points) => ui.evaluate(async ({ base64, points }) => {
+    const bytes = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }), { colorSpaceConversion: 'default' });
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const drawing = canvas.getContext('2d', { colorSpace: 'srgb' }); drawing.drawImage(bitmap, 0, 0);
+    const colors = points.map(([x, y]) => [...drawing.getImageData(x, y, 1, 1).data]);
+    const result = { size: [bitmap.width, bitmap.height], colors }; bitmap.close(); return result;
+  }, { base64, points });
   const savePng = async (id, filename) => {
     const bytes = await ui.evaluate(async id => {
       const { getItem } = await import('./lib/store.js');
@@ -141,6 +167,28 @@ try {
     assert.deepEqual(actual.pixel, [80, 180, 130, 255]);
     await savePng(response.result.id, 'engine-full-page-2x.png');
     return actual;
+  });
+
+  await test('extension output preserves native sRGB, gradients and modern CSS colors', async () => {
+    const colorPage = await context.newPage();
+    try {
+      await colorPage.setViewportSize({ width: 800, height: 900 });
+      const url = `${baseUrl}/colors`;
+      await colorPage.goto(url);
+      const reference = await colorPage.screenshot({ fullPage: true });
+      const tab = (await send({ type: 'SL_TABS' })).tabs.find(tab => tab.url === url);
+      assert.ok(tab, 'color source tab is discoverable');
+      const response = await capture({ kind: 'tab', tabId: tab.id }, { width: 800 });
+      assert.equal(response.ok, true, response.error);
+      const native = await inspectPng(reference.toString('base64'), colorPoints);
+      const extension = await inspectPixels(response.result.id, colorPoints);
+      assert.deepEqual(extension.size, [800, 1200]);
+      assert.deepEqual(native.size, extension.size);
+      assert.deepEqual(extension.colors[0], [243, 239, 228, 255], 'solid sRGB stays exact');
+      const delta = extension.colors.flatMap((color, index) => color.slice(0, 3).map((channel, channelIndex) => Math.abs(channel - native.colors[index][channelIndex])));
+      assert.ok(Math.max(...delta) <= 1, `extension and native color channels differ by ${Math.max(...delta)}`);
+      return { points: colorPoints, maxChannelDelta: Math.max(...delta), native: native.colors, extension: extension.colors };
+    } finally { await colorPage.close(); }
   });
 
   for (const width of [390, 768]) {

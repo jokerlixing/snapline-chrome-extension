@@ -35,13 +35,13 @@ export async function encodeExport(record, { format, quality = 92, layout = 'a4'
   if (!record?.blob) throw new Error('请先生成网页预览。');
   if (!['png', 'jpeg', 'webp', 'pdf'].includes(format)) throw new Error('请选择一种有效的导出格式。');
   if (format === 'png') return record.blob;
-  const bitmap = await createImageBitmap(record.blob);
+  const bitmap = await createImageBitmap(record.blob, { colorSpaceConversion: 'default' });
   const canvas = document.createElement('canvas');
   try {
     const output = planRasterExport(bitmap.width, bitmap.height, format);
     canvas.width = output.width;
     canvas.height = output.height;
-    const context = canvas.getContext('2d');
+    const context = canvas.getContext('2d', { colorSpace: 'srgb' });
     if (!context) throw new Error('无法分配图片画布，请降低清晰度。');
     if (format === 'jpeg' || format === 'pdf') { context.fillStyle = '#fff'; context.fillRect(0, 0, canvas.width, canvas.height); }
     context.imageSmoothingQuality = 'high';
@@ -49,7 +49,7 @@ export async function encodeExport(record, { format, quality = 92, layout = 'a4'
     if (format !== 'pdf') {
       const blob = await new Promise(resolve => canvas.toBlob(resolve, `image/${format}`, Math.max(.3, Math.min(1, quality / 100))));
       if (!blob || blob.type !== `image/${format}`) throw new Error('浏览器无法生成这个格式，请改用 PNG。');
-      const encoded = await createImageBitmap(blob);
+      const encoded = await createImageBitmap(blob, { colorSpaceConversion: 'default' });
       try {
         if (encoded.width !== canvas.width || encoded.height !== canvas.height) throw new Error('导出的图片尺寸不完整，请改用 PNG 或 PDF。');
       } finally { encoded.close(); }
@@ -65,7 +65,9 @@ export async function encodeExport(record, { format, quality = 92, layout = 'a4'
         const part = plan.slices[i];
         if (i) pdf.addPage([plan.paperWidth, plan.paperHeight], plan.paperWidth > plan.paperHeight ? 'landscape' : 'portrait');
         slice.height = part.height;
-        slice.getContext('2d').drawImage(canvas, 0, part.y, canvas.width, part.height, 0, 0, canvas.width, part.height);
+        const sliceContext = slice.getContext('2d', { colorSpace: 'srgb' });
+        if (!sliceContext) throw new Error('无法分配 PDF 页面画布，请降低清晰度。');
+        sliceContext.drawImage(canvas, 0, part.y, canvas.width, part.height, 0, 0, canvas.width, part.height);
         pdf.addImage(slice.toDataURL('image/jpeg', .96), 'JPEG', margin, margin, plan.imageWidth, part.height * plan.imageWidth / canvas.width, `page-${i}`, 'FAST');
         await new Promise(resolve => setTimeout(resolve, 0));
       }

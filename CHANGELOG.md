@@ -2,7 +2,21 @@
 
 本文件记录每个已发布版本的变更。版本号写在 `extension/manifest.json`、`package.json` 和工作台侧栏里，`tests/release-contract.test.js` 会断言这几处一致。
 
-每个版本都有同名的 Git 标签（例如 `v1.2.2`）。插件安装包发布在 [GitHub Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest)，网页版部署在 [GitHub Pages](https://jokerlixing.github.io/snapline-chrome-extension/)。
+每个版本都有同名的 Git 标签（例如 `v1.2.3`）。插件安装包发布在 [GitHub Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest)，网页版部署在 [GitHub Pages](https://jokerlixing.github.io/snapline-chrome-extension/)。
+
+## 1.2.3 — 2026-09-19
+
+### 修复
+
+- **网页版与插件版输出颜色一致**：网页版原先让 html2canvas 重新解析并绘制 CSS，渐变、半透明叠色与 Chromium 原生截图会出现色差，`color(display-p3 ...)`、`oklch(...)` 等现代颜色还可能解析失败。现在改为使用 Chromium 的 DOM 原生绘制路径，输出与插件版的浏览器截图保持一致。
+- **统一 sRGB 输出链路**：网页版画布、插件长页/滚动区域拼接画布，以及 JPG、WebP、PDF 转码画布均显式使用 sRGB；位图解码显式执行默认色彩转换，避免显示器配置或中间画布造成不同结果。
+- **内部滚动区域定位**：原生 DOM 绘制选中正文滚动区域时，抵消元素在文档中的坐标偏移，避免底部被白色画布覆盖，完整长正文仍能输出。
+- **首尾像素完整**：html2canvas 1.4.1 的 foreign-object 路径重复添加缩放偏移，1×/2×/3× 会分别留出 1/4/9 行白边并覆盖真实首行。构建时对固定版本精确修正 SVG 起点，首列、首行、末列和末行均纳入回归。
+
+### 测试
+
+- 新增同一颜色夹具的两端像素回归，覆盖截图中使用的米色底色 `#f3efe4`、白色半透明叠加、横向渐变、内阴影、Display P3 与 OKLCH，并检查首尾边界像素；网页版和插件版相对 Chromium 原生结果的单通道最大误差均为 1。
+- 网页版内部滚动、透明背景、1–3 倍清晰度和完整长页回归继续通过。
 
 ## 1.2.2 — 2026-09-18
 

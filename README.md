@@ -42,7 +42,7 @@
 
 ## 插件版
 
-1. 从 [Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest) 下载 `Snapline-v1.2.2.zip` 并完整解压。
+1. 从 [Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest) 下载 `Snapline-v1.2.3.zip` 并完整解压。
 2. 在 Chrome 打开 `chrome://extensions`，开启「开发者模式」。
 3. 点击「加载已解压的扩展程序」，选择解压后的 `snapline` 文件夹，里面应直接包含 `manifest.json`。
 4. 打开要保存的网页，完成登录或展开内容，点击拾页工具栏图标。
@@ -64,7 +64,7 @@ npm run preview
 
 - `dist/site/`：可部署的静态网页版；本地地址为 `http://127.0.0.1:4173`。**这是唯一发布到线上的产物。**
 - `dist/snapline/`：Chrome 可加载的插件目录，只作为下载包分发，不作为网站部署。
-- 构建同时生成 `dist/Snapline-v1.2.2.zip` 安装包，内容与 `dist/snapline/` 相同（顶层为 `snapline` 文件夹），也是发布到 Releases 的那个文件。
+- 构建同时生成 `dist/Snapline-v1.2.3.zip` 安装包，内容与 `dist/snapline/` 相同（顶层为 `snapline` 文件夹），也是发布到 Releases 的那个文件。
 - 只构建网页版：`npm run build:web`；只构建插件：`npm run build:extension`。线上部署只运行前者。
 
 请通过 HTTP 服务打开本地网页版，直接双击 `index.html` 会受到模块与资源加载限制。
@@ -83,14 +83,15 @@ npm run test:tall
 
 完整回归使用 `npm run test:all`。其中 `test:upgrade` 需要完整 Git 历史，会提取真实 1.0.0 进行覆盖升级测试；仅下载源码 ZIP 不含该历史。浏览器测试使用独立配置，不读取日常浏览器数据；Linux 安装测试浏览器时可用 `npx playwright install --with-deps chromium`。
 
-**最近核查：2026-09-18，v1.2.2。** 35 项单元测试、16 组长网页与重载检查、16 项插件工作台、8 组控件、8 组内部滚动、5 组长页分段、25 个格式检查、5 项升级、18 组网页版捕获、10 组网页操作、12 组文档化选项全部通过（浏览器检查共 123 项，0 失败）。
+**最近核查：2026-09-19，v1.2.3。** 35 项单元测试、17 组长网页与重载检查、16 项插件工作台、8 组控件、8 组内部滚动、5 组长页分段、25 个格式检查、5 项升级、19 组网页版捕获、10 组网页操作、12 组文档化选项全部通过（浏览器检查共 125 项，0 失败）。
 
-两项修复：
+近期重点修复：
 
+- **输出颜色一致**：网页版改用 Chromium 原生 DOM 绘制，渐变、半透明、`display-p3` 与 `oklch` 不再由旧解析器近似重绘；网页版、插件分段拼接及 JPG/WebP/PDF 导出都使用 sRGB 画布。相同颜色夹具逐像素复测，两端相对浏览器原生结果的单通道最大误差为 1。
 - **超长网页**：旧版对超过约 16,384 设备像素的网页返回 `-32000 Unable to capture screenshot`，现已改为分段截取后拼接，并在请求被拒时自动减半重试；用真实 Chrome 153 复测 30,000 px 长页、2×、3× 组合以及一次真实拒绝恢复，逐行核对色带无错位。
 - **界面抖动**：通知出现时会临时加高页面，使根滚动条突然出现、视口宽度少 15 px，整列内容和预览图跟着重排，看上去就是"弹通知就抖"。现在根元素和预览区都预留滚动条槽位（`scrollbar-gutter: stable`），实测通知出现前后内容区宽度与预览图宽度均**完全不变**。该现象只在页面高度刚好卡在滚动条临界点时才出现，因此表现为"偶尔"。
 
-功能核查记录及每项对应的测试命令见 [最新功能验收](docs/verification.md#2026-09-18-界面抖动与部署范围修复)。线上复测可将环境变量 `SNAPLINE_WEB_URL` 设为公共网站地址后运行 `npm run test:web`。测试中使用可复现的本地页面和独立浏览器配置，不代表任意第三方网站或私人登录会话均已实测。
+功能核查记录及每项对应的测试命令见 [最新功能验收](docs/verification.md#2026-09-19-网页与插件输出颜色一致性修复)。线上复测可将环境变量 `SNAPLINE_WEB_URL` 设为公共网站地址后运行 `npm run test:web`。测试中使用可复现的本地页面和独立浏览器配置，不代表任意第三方网站或私人登录会话均已实测。
 
 推送 `main` 后，`.github/workflows/pages.yml` 自动检查、构建并发布 `dist/site` 到 GitHub Pages。**仓库只部署这一个网站**：工作流中只有 `pages.yml` 一个部署入口，只运行 `npm run build:web`，只上传 `dist/site`；插件产物 `dist/snapline` 与 ZIP 只作为下载包分发，不会被发布成第二个站点。`tests/release-contract.test.js` 会断言这条约束（工作流数量、上传路径、以及 `dist/site` 内不含 `manifest.json`、`background.js` 等插件专属文件），因此出现第二个站点会直接让测试失败。工作流使用只读源码权限，部署任务仅请求 Pages 和 OIDC 所需权限，无需额外密钥。站点不包含构建依赖、测试产物或本机记录。
 

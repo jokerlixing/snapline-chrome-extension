@@ -224,7 +224,7 @@ async function captureSurface(job, clip, scale, contextId, captureBeyondViewport
       // The stitched canvas matches the requested region exactly; the final tile
       // may extend past it and is clipped by drawImage.
       canvas = new OffscreenCanvas(Math.ceil(clip.width) * scale, Math.ceil(clip.height) * scale);
-      const drawing = canvas.getContext('2d');
+      const drawing = canvas.getContext('2d', { colorSpace: 'srgb' });
       if (!drawing) throw new Error('无法分配长网页画布，请降低清晰度后重试。');
       const deadline = Date.now() + 180000;
       for (let index = 0; index < plan.tiles.length; index++) {
@@ -233,7 +233,7 @@ async function captureSurface(job, clip, scale, contextId, captureBeyondViewport
         const tile = plan.tiles[index];
         const shot = await command(job, 'Page.captureScreenshot', screenshotRequest(tile, true), 60000);
         if (!shot.data) throw new Error('没有收到截图数据，请重新生成。');
-        const bitmap = await createImageBitmap(base64ToBlob(shot.data));
+        const bitmap = await createImageBitmap(base64ToBlob(shot.data), { colorSpaceConversion: 'default' });
         try {
           // Tiles are captured from document coordinates, so they land on the
           // canvas at their own offset and no page scrolling is needed.
@@ -284,7 +284,7 @@ async function captureScrollRegion(job, contextId, options, warnings) {
     region = await evaluate(job, scrollRegion, ['scroll', { top: 0, assets: options.lazyLoad }], contextId);
     const geometry = calculateCaptureGeometry({ cssVisualViewport: { clientWidth: region.width, clientHeight: region.height }, cssContentSize: { width: region.width, height: region.totalHeight } }, options);
     canvas = new OffscreenCanvas(geometry.width, geometry.height);
-    const drawing = canvas.getContext('2d');
+    const drawing = canvas.getContext('2d', { colorSpace: 'srgb' });
     if (!drawing) throw new Error('无法分配长网页画布，请降低清晰度后重试。');
     const totalHeight = region.totalHeight;
     const deadline = Date.now() + 90000;
@@ -298,7 +298,7 @@ async function captureScrollRegion(job, contextId, options, warnings) {
       // A wide region at high clarity can still overflow one surface, so this
       // goes through the same tiling path as the full-page capture.
       const tile = await captureSurface(job, { x: region.x, y: region.y, width: region.width, height: region.height }, options.scale, contextId, false);
-      const bitmap = tile.canvas || await createImageBitmap(base64ToBlob(tile.data));
+      const bitmap = tile.canvas || await createImageBitmap(base64ToBlob(tile.data), { colorSpaceConversion: 'default' });
       try {
         // The last scroll is clamped by the browser. Skip its already-captured
         // overlap so every output row is covered once, including the page end.

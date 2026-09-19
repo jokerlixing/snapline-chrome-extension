@@ -115,7 +115,15 @@ export async function captureWebHtml(source, inputOptions = {}, { signal, onProg
     const contentHeight = isRoot ? Math.max(height, doc.documentElement.scrollHeight, doc.body?.scrollHeight || 0) : Math.max(target.clientHeight, target.scrollHeight);
     const geometry = calculateCaptureGeometry({ cssVisualViewport: { clientWidth: width, clientHeight: height }, cssContentSize: { width: contentWidth, height: contentHeight } }, options);
     report('正在生成网页预览', 65);
+    // Use Chromium's own DOM renderer so gradients, alpha compositing and modern
+    // colour functions are painted the same way as the extension's native page
+    // screenshot. Lock the destination to sRGB so both capture paths produce the
+    // same portable pixel values regardless of the monitor colour profile.
+    const renderCanvas = document.createElement('canvas');
+    if (!renderCanvas.getContext('2d', { colorSpace: 'srgb' })) throw new Error('浏览器无法创建标准色彩画布，请更新浏览器后重试。');
+    const targetBounds = target.getBoundingClientRect();
     const render = html2canvas(target, {
+      canvas: renderCanvas,
       backgroundColor: options.transparent ? null : '#ffffff',
       scale: options.scale,
       width: geometry.width / options.scale,
@@ -124,11 +132,15 @@ export async function captureWebHtml(source, inputOptions = {}, { signal, onProg
       windowHeight: height,
       scrollX: 0,
       scrollY: 0,
+      // Cancel the selected node's document offset for nested scroll areas.
+      x: -targetBounds.left,
+      y: -targetBounds.top,
       allowTaint: false,
       useCORS: true,
       imageTimeout: 5000,
       logging: false,
       removeContainer: true,
+      foreignObjectRendering: true,
     });
     render.then(result => { if (signal?.aborted) { result.width = 0; result.height = 0; } }, () => {});
     canvas = await abortable(render, signal);
