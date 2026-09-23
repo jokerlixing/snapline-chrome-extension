@@ -10,6 +10,7 @@ const root = resolve('.');
 const artifacts = resolve('artifacts');
 await mkdir(artifacts, { recursive: true });
 const html = await readFile('fixtures/demo.html');
+const largeHtml = '<!doctype html><title>Oversized export</title><style>html,body{margin:0}main{height:15166px;position:relative;background:#abc}header,footer{height:200px;background:rgb(180,50,70)}footer{position:absolute;bottom:0;width:100%;background:rgb(40,180,100)}</style><main><header></header><footer></footer></main>';
 const server = createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(html); });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const url = `http://127.0.0.1:${server.address().port}/demo`;
@@ -102,6 +103,44 @@ try {
   await page.locator('#preview-badge.ready').waitFor({ timeout: 120000 });
   await page.waitForFunction(() => !document.getElementById('export-button').disabled);
   recordPass('本地单文件 HTML 完整转换');
+
+  await page.locator('#file-input').setInputFiles({ name: 'large.html', mimeType: 'text/html', buffer: Buffer.from(largeHtml) });
+  await page.locator('#file-description').filter({ hasText: '已准备好' }).waitFor();
+  await page.locator('#width').selectOption('custom');
+  await page.locator('#custom-width').fill('784');
+  await page.locator('[data-scale="3"]').click();
+  await page.locator('#capture-button').click();
+  await page.locator('#preview-badge.ready').waitFor({ timeout: 120000 });
+  await page.waitForFunction(() => !document.getElementById('export-button').disabled);
+  const largePreview = await page.locator('#preview-image').evaluate(image => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+    const drawing = canvas.getContext('2d');
+    const sample = y => { drawing.drawImage(image, Math.floor(image.naturalWidth / 2), y, 1, 1, 0, 0, 1, 1); return [...drawing.getImageData(0, 0, 1, 1).data]; };
+    return { width: image.naturalWidth, height: image.naturalHeight, top: sample(10), bottom: sample(image.naturalHeight - 10) };
+  });
+  assert.equal(largePreview.height, 30000);
+  assert.ok(largePreview.width > 1500 && largePreview.width < 1600);
+  assert.deepEqual(largePreview.top, [180, 50, 70, 255]);
+  assert.deepEqual(largePreview.bottom, [40, 180, 100, 255]);
+  assert.match(await page.locator('#warning-box').innerText(), /2,352 × 45,498.*完整内容/);
+  await page.locator('#pdf-layout').selectOption('a4');
+  for (const format of ['png', 'jpeg', 'webp', 'pdf']) {
+    await page.locator(`[data-format=${format}]`).click();
+    const pending = page.waitForEvent('download', { timeout: 120000 });
+    await page.locator('#export-button').click();
+    const file = join(artifacts, `extension-large-export.${format === 'jpeg' ? 'jpg' : format}`);
+    await (await pending).saveAs(file);
+    const buffer = await readFile(file);
+    assert.ok(buffer.length > 500);
+    if (format === 'png') assert.equal(buffer.toString('hex', 0, 8), '89504e470d0a1a0a');
+    if (format === 'jpeg') assert.equal(buffer.toString('hex', 0, 3), 'ffd8ff');
+    if (format === 'webp') assert.equal(buffer.toString('ascii', 8, 12), 'WEBP');
+    if (format === 'pdf') assert.equal(buffer.toString('ascii', 0, 5), '%PDF-');
+    await page.waitForFunction(() => !document.getElementById('export-button').disabled);
+  }
+  recordPass('超限整页在插件内完整预览，PNG/JPG/WebP/PDF均可下载');
+  await page.locator('#width').selectOption('768');
+  await page.locator('[data-scale="1"]').click();
 
   await page.locator('#folder-input').setInputFiles(resolve('fixtures/demo-folder'));
   await page.locator('#file-description').filter({ hasText: '已准备好' }).waitFor();

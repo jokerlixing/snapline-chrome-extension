@@ -198,14 +198,17 @@ try {
     } finally { await page.close(); }
   });
 
-  await test('oversized main scroll capture reports the size limit and restores source state', async () => {
+  await test('oversized main scroll capture keeps every section and restores source state', async () => {
     const { page, tabId, before } = await source('/huge', 3173);
     try {
       const response = await capture(tabId);
       const after = await restore(page, before);
-      assert.equal(response.ok, false);
-      assert.match(response.error, /尺寸过大/);
-      return { error: response.error, before, after };
+      assert.equal(response.ok, true, response.error);
+      assert.equal(response.result.height, 30000);
+      assert.ok(response.result.warnings.some(warning => /已等比缩小.*完整内容/.test(warning)));
+      const actual = await inspect(response.result.id, [[500, 100], [500, 15000], [500, 29900]]);
+      assert.deepEqual(actual.pixels, colors);
+      return { size: [actual.width, actual.height], pixels: actual.pixels, warnings: response.result.warnings, before, after };
     } finally { await page.close(); }
   });
 

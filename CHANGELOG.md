@@ -2,7 +2,18 @@
 
 本文件记录每个已发布版本的变更。版本号写在 `extension/manifest.json`、`package.json` 和工作台侧栏里，`tests/release-contract.test.js` 会断言这几处一致。
 
-每个版本都有同名的 Git 标签（例如 `v1.2.3`）。插件安装包发布在 [GitHub Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest)，网页版部署在 [GitHub Pages](https://jokerlixing.github.io/snapline-chrome-extension/)。
+每个版本都有同名的 Git 标签（例如 `v1.2.4`）。插件安装包发布在 [GitHub Releases](https://github.com/jokerlixing/snapline-chrome-extension/releases/latest)，网页版部署在 [GitHub Pages](https://jokerlixing.github.io/snapline-chrome-extension/)。
+
+## 1.2.4 — 2026-09-23
+
+### 修复
+
+- **超大图片可以转换**：网页版和插件版以前会拒绝超过单边 32,760 像素或总像素 6,400 万的整页，例如用户遇到的 `2,352 × 45,498` 像素。现在自动等比缩小到安全画布范围，同时保留完整网页和正文滚动区域，并在预览中显示原始尺寸与实际输出尺寸。该例实际输出 `1,550 × 30,000` 像素。
+- **插件长滚动区域末尾完整**：缩小后的分段拼接按实际输出比例计算滚动位置；每段向上取整留足末行，避免最后一个像素行丢失。
+
+### 测试
+
+- 同尺寸网页在网页版和插件版的真实浏览器中验证了预览首尾像素与 PNG、JPG、WebP、PDF 下载；固定视口内 42,000 像素的正文滚动区域也验证了首、中、末段和来源页面状态恢复。
 
 ## 1.2.3 — 2026-09-19
 

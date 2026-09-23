@@ -174,12 +174,24 @@ try {
     }, fixture);
     assert.equal(result.error.name, 'AbortError'); assert.equal(result.frames, 0); assert.equal(result.nextHeight, 3600); return result;
   });
-  await test('oversized capture rejects before creating a giant canvas', async () => {
+  await test('reported 2352 × 45498 web capture includes its first and last content', async () => {
     const result = await page.evaluate(async () => {
-      try { await captureWebHtml({ html: '<!doctype html><div style="height:40000px"></div>' }, { width: 390, delay: 0 }); }
-      catch (error) { return { message: error.message, frames: document.querySelectorAll('iframe').length }; }
+      const html = '<!doctype html><style>html,body{margin:0}main{position:relative;height:15166px;background:#abc}header,footer{height:200px;background:rgb(180,50,70)}footer{position:absolute;bottom:0;width:100%;background:rgb(40,180,100)}</style><main><header></header><footer></footer></main>';
+      const capture = await captureWebHtml({ html }, { width: 784, scale: 3, delay: 0 });
+      const bitmap = await createImageBitmap(capture.blob);
+      const canvas = new OffscreenCanvas(1, 1);
+      const drawing = canvas.getContext('2d', { colorSpace: 'srgb' });
+      const sample = y => { drawing.drawImage(bitmap, Math.floor(bitmap.width / 2), y, 1, 1, 0, 0, 1, 1); return [...drawing.getImageData(0, 0, 1, 1).data]; };
+      const result = { width: bitmap.width, height: bitmap.height, top: sample(10), bottom: sample(bitmap.height - 10), warnings: capture.warnings, frames: document.querySelectorAll('iframe').length };
+      bitmap.close(); return result;
     });
-    assert.match(result.message, /尺寸过大/); assert.equal(result.frames, 0); return result;
+    assert.equal(result.height, 30000);
+    assert.ok(result.width > 1500 && result.width < 1600);
+    assert.deepEqual(result.top, [180, 50, 70, 255]);
+    assert.deepEqual(result.bottom, [40, 180, 100, 255]);
+    assert.ok(result.warnings.some(warning => /2,352 × 45,498.*完整内容/.test(warning)));
+    assert.equal(result.frames, 0);
+    return result;
   });
 } catch (error) {
   results.push({ name: 'failure', ok: false, error: error.stack }); process.exitCode = 1; console.error(error.stack);

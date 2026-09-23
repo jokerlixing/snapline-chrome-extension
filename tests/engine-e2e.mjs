@@ -42,7 +42,7 @@ try {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     if (request.url === '/colors') response.end(colorFixture);
     else if (request.url === '/transparent') response.end('<!doctype html><title>Transparent</title><style>html,body{margin:0;height:600px}div{width:200px;height:100px;background:#db2777}</style><div></div>');
-    else if (request.url === '/huge') response.end('<!doctype html><title>Huge</title><style>html,body{margin:0}div{height:40000px;background:#abc}</style><div></div>');
+    else if (request.url === '/huge') response.end('<!doctype html><title>Huge</title><style>html,body{margin:0}main{height:15166px;position:relative;background:#abc}header,footer{height:200px;background:rgb(180,50,70)}footer{position:absolute;bottom:0;width:100%;background:rgb(40,180,100)}</style><main><header></header><footer></footer></main>');
     else if (request.url === '/missing.png') { response.statusCode = 404; response.end('missing'); }
     else if (request.url === '/broken') response.end('<!doctype html><title>Broken image</title><img src="/missing.png"><div style="height:300px">Visible content</div>');
     else if (request.url === '/auth') response.end(`<title>Authenticated</title><div style="width:100px;height:100px;background:${request.headers.cookie?.includes('session=valid') ? '#00ff00' : '#ff0000'}"></div>`);
@@ -358,13 +358,26 @@ try {
     return response.result.warnings;
   });
 
-  await test('oversized capture returns actionable error and restores original page', async () => {
+  await test('reported 2352 × 45498 capture keeps the complete page after automatic resizing', async () => {
     await sourcePage.goto(`${baseUrl}/huge`);
     await sourcePage.evaluate(() => scrollTo(0, 700));
     const before = await sourcePage.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, scrollY }));
-    const response = await capture({ kind: 'tab', tabId: sourceTab.id }, { scale: 2 });
-    assert.equal(response.ok, false);
-    assert.match(response.error, /尺寸过大/);
+    const response = await capture({ kind: 'tab', tabId: sourceTab.id }, { width: 784, scale: 3 });
+    assert.equal(response.ok, true, response.error);
+    assert.equal(response.result.height, 30000);
+    assert.ok(response.result.width > 1500 && response.result.width < 1600);
+    assert.ok(response.result.warnings.some(warning => /2,352 × 45,498.*完整内容/.test(warning)));
+    const edges = await ui.evaluate(async ({ id, width, height }) => {
+      const { getItem } = await import('./lib/store.js');
+      const bitmap = await createImageBitmap((await getItem(id)).blob);
+      const canvas = new OffscreenCanvas(1, 1);
+      const drawing = canvas.getContext('2d', { colorSpace: 'srgb' });
+      const sample = y => { drawing.drawImage(bitmap, Math.floor(width / 2), y, 1, 1, 0, 0, 1, 1); return [...drawing.getImageData(0, 0, 1, 1).data]; };
+      const result = { top: sample(10), bottom: sample(height - 10) };
+      bitmap.close(); return result;
+    }, { id: response.result.id, width: response.result.width, height: response.result.height });
+    assert.deepEqual(edges.top, [180, 50, 70, 255]);
+    assert.deepEqual(edges.bottom, [40, 180, 100, 255]);
     const after = await sourcePage.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, scrollY }));
     if (visibleInfobar) {
       assert.equal(after.width, before.width);
@@ -372,7 +385,7 @@ try {
       assert.equal(after.scrollY, before.scrollY);
       assert.ok(Math.abs(after.height - before.height) <= 60);
     } else assert.deepEqual(after, before);
-    return { error: response.error, before, after };
+    return { size: [response.result.width, response.result.height], edges, warnings: response.result.warnings, before, after };
   });
 
   await test('UI cancellation restores existing tab and releases busy capture lock', async () => {

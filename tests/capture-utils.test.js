@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, utf8ToBase64, base64ToBlob, captureErrorMessage, planSurfaceTiles, SURFACE_LIMIT, MIN_TILE_DIMENSION } from '../extension/lib/capture-utils.js';
+import { normalizeCaptureOptions, normalizeWebUrl, isCapturableUrl, calculateCaptureGeometry, captureResizeWarning, CAPTURE_LIMITS, utf8ToBase64, base64ToBlob, captureErrorMessage, planSurfaceTiles, SURFACE_LIMIT, MIN_TILE_DIMENSION } from '../extension/lib/capture-utils.js';
 
 const metrics = { cssContentSize: { width: 1440, height: 3000 }, cssVisualViewport: { pageX: 5, pageY: 900, clientWidth: 1440, clientHeight: 900 } };
 
@@ -28,13 +28,28 @@ test('tab eligibility excludes browser-internal pages and Chrome Web Store', () 
 });
 
 test('full-page output accounts for DPR while viewport capture preserves scroll coordinates', () => {
-  assert.deepEqual(calculateCaptureGeometry(metrics, { scope: 'full', scale: 2 }), { clip: { x: 0, y: 0, width: 1440, height: 3000, scale: 1 }, width: 2880, height: 6000 });
+  assert.deepEqual(calculateCaptureGeometry(metrics, { scope: 'full', scale: 2 }), { clip: { x: 0, y: 0, width: 1440, height: 3000, scale: 1 }, width: 2880, height: 6000, outputScale: 2, downscaled: false });
   assert.deepEqual(calculateCaptureGeometry(metrics, { scope: 'viewport', scale: 1 }).clip, { x: 5, y: 900, width: 1440, height: 900, scale: 1 });
 });
 
-test('capture geometry enforces both edge and total area limits without silent cropping', () => {
-  assert.throws(() => calculateCaptureGeometry({ ...metrics, cssContentSize: { width: 100, height: 40000 } }, { scope: 'full', scale: 1 }), /尺寸过大/);
-  assert.throws(() => calculateCaptureGeometry({ ...metrics, cssContentSize: { width: 9000, height: 9000 } }, { scope: 'full', scale: 1 }), /尺寸过大/);
+test('the reported 2352 × 45498 capture fits the full page automatically and tells the user its output size', () => {
+  const options = { scope: 'full', scale: 3 };
+  const geometry = calculateCaptureGeometry({ ...metrics, cssContentSize: { width: 784, height: 15166 } }, options);
+  assert.equal(geometry.downscaled, true);
+  assert.equal(geometry.clip.height, 15166);
+  assert.ok(geometry.height <= CAPTURE_LIMITS.autoDimension);
+  assert.ok(geometry.width * geometry.height <= CAPTURE_LIMITS.autoPixels);
+  assert.ok(geometry.width / geometry.height > 784 / 15166 - 0.001);
+  assert.match(captureResizeWarning(geometry, options), /2,352 × 45,498.*已等比缩小.*完整内容/);
+});
+
+test('oversized captures on either axis are resized, while invalid page dimensions still fail', () => {
+  for (const content of [{ width: 100, height: 40000 }, { width: 9000, height: 9000 }]) {
+    const geometry = calculateCaptureGeometry({ ...metrics, cssContentSize: content }, { scope: 'full', scale: 1 });
+    assert.equal(geometry.downscaled, true);
+    assert.ok(geometry.width <= CAPTURE_LIMITS.maxDimension && geometry.height <= CAPTURE_LIMITS.maxDimension);
+    assert.ok(geometry.width * geometry.height <= CAPTURE_LIMITS.maxPixels);
+  }
   assert.throws(() => calculateCaptureGeometry({ ...metrics, cssContentSize: { width: 0, height: 100 } }, { scope: 'full', scale: 1 }), /尺寸为空/);
 });
 

@@ -1,6 +1,10 @@
 export const CAPTURE_LIMITS = Object.freeze({
   maxDimension: 32760,
   maxPixels: 64_000_000,
+  // Leave headroom for the decoded PNG and format-conversion canvases when a
+  // capture has to be reduced automatically.
+  autoDimension: 30000,
+  autoPixels: 48_000_000,
   maxHtmlBytes: 60 * 1024 * 1024,
   maxDelay: 10000,
   minWidth: 200,
@@ -83,14 +87,30 @@ export function calculateCaptureGeometry(metrics, options) {
   if (![width, height].every(value => Number.isFinite(value) && value > 0)) throw new Error('网页尺寸为空，请检查页面内容后重试。');
   const pixelWidth = Math.ceil(width * options.scale);
   const pixelHeight = Math.ceil(height * options.scale);
-  if (pixelWidth > CAPTURE_LIMITS.maxDimension || pixelHeight > CAPTURE_LIMITS.maxDimension || pixelWidth * pixelHeight > CAPTURE_LIMITS.maxPixels) {
-    throw new Error(`图片尺寸过大（${pixelWidth.toLocaleString()} × ${pixelHeight.toLocaleString()} 像素）。请降低清晰度或改为「当前可见区域」；单边最多 32,760 像素，总像素最多 6,400 万。`);
-  }
+  const oversized = pixelWidth > CAPTURE_LIMITS.maxDimension || pixelHeight > CAPTURE_LIMITS.maxDimension || pixelWidth * pixelHeight > CAPTURE_LIMITS.maxPixels;
+  const outputScale = oversized ? Math.min(
+    options.scale,
+    CAPTURE_LIMITS.autoDimension / width,
+    CAPTURE_LIMITS.autoDimension / height,
+    Math.sqrt(CAPTURE_LIMITS.autoPixels / (width * height)),
+  ) : options.scale;
+  const outputWidth = oversized ? Math.max(1, Math.floor(width * outputScale)) : pixelWidth;
+  const outputHeight = oversized ? Math.max(1, Math.floor(height * outputScale)) : pixelHeight;
+  if (outputWidth > CAPTURE_LIMITS.maxDimension || outputHeight > CAPTURE_LIMITS.maxDimension || outputWidth * outputHeight > CAPTURE_LIMITS.maxPixels) throw new Error('网页尺寸超出浏览器可处理的范围，请缩小网页宽度或截取当前可见区域。');
   return {
     clip: { x: full ? 0 : Math.max(0, viewport.pageX || 0), y: full ? 0 : Math.max(0, viewport.pageY || 0), width, height, scale: 1 },
-    width: pixelWidth,
-    height: pixelHeight,
+    width: outputWidth,
+    height: outputHeight,
+    outputScale,
+    downscaled: oversized,
   };
+}
+
+export function captureResizeWarning(geometry, options) {
+  if (!geometry.downscaled) return null;
+  const requestedWidth = Math.ceil(geometry.clip.width * options.scale);
+  const requestedHeight = Math.ceil(geometry.clip.height * options.scale);
+  return `原始截图 ${requestedWidth.toLocaleString()} × ${requestedHeight.toLocaleString()} 像素超出单张图片上限，已等比缩小为 ${geometry.width.toLocaleString()} × ${geometry.height.toLocaleString()} 像素，完整内容仍会保留。`;
 }
 
 export function utf8ToBase64(text) {

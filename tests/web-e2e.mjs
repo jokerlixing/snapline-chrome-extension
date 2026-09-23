@@ -33,6 +33,7 @@ const passed = [];
 page.on('pageerror', error => errors.push(error.message));
 const pass = label => { passed.push(label); console.log(`PASS ${label}`); };
 const sample = `<!doctype html><meta charset="utf-8"><title>网页版本地测试</title><style>html,body{margin:0}main{height:2400px;background:#eef3ff;position:relative}header{height:160px;background:rgb(180,50,70)}footer{position:absolute;bottom:0;height:160px;width:100%;background:rgb(40,180,100)}</style><main><header>START</header><footer>END</footer></main><script>parent.localStorage.setItem('snapline-test-attacked','yes')</script>`;
+const largeSample = '<!doctype html><title>Oversized export</title><style>html,body{margin:0}main{height:15166px;position:relative;background:#abc}header,footer{height:200px;background:rgb(180,50,70)}footer{position:absolute;bottom:0;width:100%;background:rgb(40,180,100)}</style><main><header></header><footer></footer></main>';
 async function generate() {
   await page.locator('#capture-button').click();
   await page.waitForFunction(() => document.querySelector('#preview-badge.ready') && !document.getElementById('export-button').disabled, null, { timeout: 60000 });
@@ -83,6 +84,39 @@ try {
     if (format === 'webp') assert.equal(bytes.subarray(8, 12).toString(), 'WEBP');
   }
   pass('PNG/JPG/WebP/PDF四种格式实际下载成功');
+
+  await page.locator('#file-input').setInputFiles({ name: 'large.html', mimeType: 'text/html', buffer: Buffer.from(largeSample) });
+  await page.locator('#file-description').filter({ hasText: '已准备好' }).waitFor();
+  await page.locator('#width').selectOption('custom');
+  await page.locator('#custom-width').fill('784');
+  await page.locator('[data-scale="3"]').click();
+  await generate();
+  const largePreview = await page.locator('#preview-image').evaluate(image => {
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+    const drawing = canvas.getContext('2d');
+    const sample = y => { drawing.drawImage(image, Math.floor(image.naturalWidth / 2), y, 1, 1, 0, 0, 1, 1); return [...drawing.getImageData(0, 0, 1, 1).data]; };
+    return { width: image.naturalWidth, height: image.naturalHeight, top: sample(10), bottom: sample(image.naturalHeight - 10) };
+  });
+  assert.equal(largePreview.height, 30000);
+  assert.ok(largePreview.width > 1500 && largePreview.width < 1600);
+  assert.deepEqual(largePreview.top, [180, 50, 70, 255]);
+  assert.deepEqual(largePreview.bottom, [40, 180, 100, 255]);
+  assert.match(await page.locator('#warning-box').innerText(), /2,352 × 45,498.*完整内容/);
+  for (const format of ['png', 'jpeg', 'webp', 'pdf']) {
+    await page.locator(`[data-format=${format}]`).click();
+    const pending = page.waitForEvent('download', { timeout: 120000 });
+    await page.locator('#export-button').click();
+    const file = join(artifacts, `web-large-download.${format === 'jpeg' ? 'jpg' : format}`);
+    await (await pending).saveAs(file);
+    const bytes = await readFile(file);
+    assert.ok(bytes.length > 500, `${format} oversized export is nonempty`);
+    if (format === 'png') assert.equal(bytes.subarray(1, 4).toString(), 'PNG');
+    if (format === 'jpeg') assert.equal(bytes.subarray(0, 2).toString('hex'), 'ffd8');
+    if (format === 'webp') assert.equal(bytes.subarray(8, 12).toString(), 'WEBP');
+    if (format === 'pdf') assert.equal(bytes.subarray(0, 5).toString(), '%PDF-');
+    await page.waitForFunction(() => !document.getElementById('export-button').disabled);
+  }
+  pass('超限整页自动缩小后首尾完整，PNG/JPG/WebP/PDF均可下载');
 
   await page.locator('#reset-source').click();
   assert.equal(await page.locator('#preview-image').isVisible(), false);

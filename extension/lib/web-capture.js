@@ -1,5 +1,5 @@
 import html2canvas from 'html2canvas';
-import { CAPTURE_LIMITS, normalizeCaptureOptions, calculateCaptureGeometry } from './capture-utils.js';
+import { CAPTURE_LIMITS, normalizeCaptureOptions, calculateCaptureGeometry, captureResizeWarning } from './capture-utils.js';
 
 const STATIC_WARNING = '网页版不会执行导入网页的脚本；动态内容请使用浏览器扩展。';
 const abortError = () => new DOMException('已取消预览。', 'AbortError');
@@ -114,6 +114,8 @@ export async function captureWebHtml(source, inputOptions = {}, { signal, onProg
     const contentWidth = isRoot ? Math.max(width, doc.documentElement.scrollWidth, doc.body?.scrollWidth || 0) : Math.max(target.clientWidth, target.scrollWidth);
     const contentHeight = isRoot ? Math.max(height, doc.documentElement.scrollHeight, doc.body?.scrollHeight || 0) : Math.max(target.clientHeight, target.scrollHeight);
     const geometry = calculateCaptureGeometry({ cssVisualViewport: { clientWidth: width, clientHeight: height }, cssContentSize: { width: contentWidth, height: contentHeight } }, options);
+    const resizeWarning = captureResizeWarning(geometry, options);
+    if (resizeWarning) warnings.push(resizeWarning);
     report('正在生成网页预览', 65);
     // Use Chromium's own DOM renderer so gradients, alpha compositing and modern
     // colour functions are painted the same way as the extension's native page
@@ -125,9 +127,9 @@ export async function captureWebHtml(source, inputOptions = {}, { signal, onProg
     const render = html2canvas(target, {
       canvas: renderCanvas,
       backgroundColor: options.transparent ? null : '#ffffff',
-      scale: options.scale,
-      width: geometry.width / options.scale,
-      height: geometry.height / options.scale,
+      scale: geometry.outputScale,
+      width: geometry.clip.width,
+      height: geometry.clip.height,
       windowWidth: width,
       windowHeight: height,
       scrollX: 0,
